@@ -68,14 +68,14 @@ func (h *webhook) Handle(_ context.Context, req admission.Request) admission.Res
 	}
 	klog.Infof(template, req.Namespace, req.Name, req.UID)
 	hasResource := false
-	for idx, ctr := range pod.Spec.Containers {
+	for idx := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[idx]
-		if ctr.SecurityContext != nil {
-			if ctr.SecurityContext.Privileged != nil && *ctr.SecurityContext.Privileged {
-				klog.Warningf(template+" - Denying admission as container %s is privileged", req.Namespace, req.Name, req.UID, c.Name)
-				continue
-			}
-		}
+		//if ctr.SecurityContext != nil {
+		//	if ctr.SecurityContext.Privileged != nil && *ctr.SecurityContext.Privileged {
+		//		klog.Warningf(template+" - Denying admission as container %s is privileged", req.Namespace, req.Name, req.UID, c.Name)
+		//		continue
+		//	}
+		//}
 		for _, val := range device.GetDevices() {
 			found, err := val.MutateAdmission(c, pod)
 			if err != nil {
