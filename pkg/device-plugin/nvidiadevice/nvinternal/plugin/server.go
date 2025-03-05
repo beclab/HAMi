@@ -479,6 +479,9 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 					&kubeletdevicepluginv1beta1.Mount{ContainerPath: "/tmp/vgpulock",
 						HostPath: "/tmp/vgpulock",
 						ReadOnly: false},
+					&kubeletdevicepluginv1beta1.Mount{ContainerPath: "/var/run/nvshare",
+						HostPath: "/var/run/nvshare",
+						ReadOnly: true},
 				)
 				found := false
 				for _, val := range currentCtr.Env {
