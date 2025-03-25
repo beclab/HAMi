@@ -1,4 +1,0 @@
-[submodule "libvgpu"]
-	path = libvgpu
-	url = https://github.com/beclab/HAMi-core.git
-	branch = feat/nvshare
