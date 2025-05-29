@@ -229,7 +229,7 @@ func UnMarshalNodeDevices(str string) ([]*DeviceInfo, error) {
 func EncodeContainerDevices(cd ContainerDevices) string {
 	tmp := ""
 	for _, val := range cd {
-		tmp += val.UUID + "," + val.Type + "," + strconv.Itoa(int(val.Usedmem)) + "," + strconv.Itoa(int(val.Usedcores)) + OneContainerMultiDeviceSplitSymbol
+		tmp += val.UUID + "," + val.Type + "," + strconv.Itoa(int(val.Usedmem)) + "," + strconv.Itoa(int(val.Usedcores)) + "," + val.ShareMode + OneContainerMultiDeviceSplitSymbol
 	}
 	klog.Infof("Encoded container Devices: %s", tmp)
 	return tmp
@@ -283,7 +283,7 @@ func DecodeContainerDevices(str string) (ContainerDevices, error) {
 		if strings.Contains(val, ",") {
 			//fmt.Println("cd is ", val)
 			tmpstr := strings.Split(val, ",")
-			if len(tmpstr) < 4 {
+			if len(tmpstr) < 5 {
 				return ContainerDevices{}, fmt.Errorf("pod annotation format error; information missing, please do not use nodeName field in task")
 			}
 			tmpdev.UUID = tmpstr[0]
@@ -292,6 +292,7 @@ func DecodeContainerDevices(str string) (ContainerDevices, error) {
 			tmpdev.Usedmem = int32(devmem)
 			devcores, _ := strconv.ParseInt(tmpstr[3], 10, 32)
 			tmpdev.Usedcores = int32(devcores)
+			tmpdev.ShareMode = tmpstr[4]
 			contdev = append(contdev, tmpdev)
 		}
 	}

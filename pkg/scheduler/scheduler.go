@@ -293,6 +293,7 @@ func (s *Scheduler) getNodesUsage(nodes *[]string, task *corev1.Pod) (*map[strin
 					Numa:        d.Numa,
 					Health:      d.Health,
 					CustomInfo:  maps.Clone(d.CustomInfo),
+					ShareMode:   d.ShareMode,
 				},
 			})
 		}
