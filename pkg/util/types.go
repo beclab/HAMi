@@ -28,6 +28,12 @@ const (
 	BindTimeAnnotations     = "hami.io/bind-time"
 	DeviceBindPhase         = "hami.io/bind-phase"
 
+	// fmt.Sprintf(ShareModeAnnoTpl, uuid)
+	ShareModeAnnotationTpl = "sharemode.gpu.bytetrade.io/%s"
+	ShareModeExclusive     = "0"
+	ShareModeMemSlicing    = "1"
+	ShareModeTimeSlicing   = "2"
+
 	DeviceBindAllocating = "allocating"
 	DeviceBindFailed     = "failed"
 	DeviceBindSuccess    = "success"
@@ -61,6 +67,7 @@ type ContainerDevice struct {
 	Usedmem    int32
 	Usedcores  int32
 	CustomInfo map[string]any
+	ShareMode string
 }
 
 type ContainerDeviceRequest struct {
@@ -121,21 +128,23 @@ type DeviceUsage struct {
 	Type        string
 	Health      bool
 	CustomInfo  map[string]any
+	ShareMode   string
 }
 
 type DeviceInfo struct {
-	ID              string          `json:"id,omitempty"`
-	Index           uint            `json:"index,omitempty"`
-	Count           int32           `json:"count,omitempty"`
-	Devmem          int32           `json:"devmem,omitempty"`
-	Devcore         int32           `json:"devcore,omitempty"`
-	Type            string          `json:"type,omitempty"`
-	Numa            int             `json:"numa,omitempty"`
-	Mode            string          `json:"mode,omitempty"`
-	MIGTemplate     []Geometry      `json:"migtemplate,omitempty"`
-	Health          bool            `json:"health,omitempty"`
-	DeviceVendor    string          `json:"devicevendor,omitempty"`
-	CustomInfo      map[string]any  `json:"custominfo,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Index        uint           `json:"index,omitempty"`
+	Count        int32          `json:"count,omitempty"`
+	Devmem       int32          `json:"devmem,omitempty"`
+	Devcore      int32          `json:"devcore,omitempty"`
+	Type         string         `json:"type,omitempty"`
+	Numa         int            `json:"numa,omitempty"`
+	Mode         string         `json:"mode,omitempty"`
+	MIGTemplate  []Geometry     `json:"migtemplate,omitempty"`
+	Health       bool           `json:"health,omitempty"`
+	DeviceVendor string         `json:"devicevendor,omitempty"`
+	CustomInfo   map[string]any `json:"custominfo,omitempty"`
+	ShareMode    string     `json:"sharemode,omitempty"`
 	DevicePairScore DevicePairScore `json:"devicepairscore,omitempty"`
 }
 

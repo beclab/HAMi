@@ -112,6 +112,7 @@ func start() error {
 		client.WithTimeout(config.Timeout),
 	)
 
+	client.InitGlobalGPUClient()
 	device.InitDevices()
 	sher = scheduler.NewScheduler()
 	sher.Start()
