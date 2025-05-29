@@ -453,7 +453,12 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 				for i, dev := range devreq {
 					limitKey := fmt.Sprintf("CUDA_DEVICE_MEMORY_LIMIT_%v", i)
 					response.Envs[limitKey] = fmt.Sprintf("%vm", dev.Usedmem)
+
+					modeKey := fmt.Sprintf("CUDA_DEVICE_GPU_MODE_%v", i)
+					response.Envs[modeKey] = devreq[0].ShareMode
 				}
+
+				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.kube-system:6000"
 				response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
 				response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
 				if plugin.schedulerConfig.DeviceMemoryScaling > 1 {
@@ -479,9 +484,6 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 					&kubeletdevicepluginv1beta1.Mount{ContainerPath: "/tmp/vgpulock",
 						HostPath: "/tmp/vgpulock",
 						ReadOnly: false},
-					&kubeletdevicepluginv1beta1.Mount{ContainerPath: "/var/run/nvshare",
-						HostPath: "/var/run/nvshare",
-						ReadOnly: true},
 				)
 				found := false
 				for _, val := range currentCtr.Env {

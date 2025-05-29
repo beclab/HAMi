@@ -290,6 +290,7 @@ func (s *Scheduler) getNodesUsage(nodes *[]string, task *corev1.Pod) (*map[strin
 					Type:        d.Type,
 					Numa:        d.Numa,
 					Health:      d.Health,
+					ShareMode:   d.ShareMode,
 				},
 			})
 		}

@@ -28,6 +28,12 @@ const (
 	BindTimeAnnotations     = "hami.io/bind-time"
 	DeviceBindPhase         = "hami.io/bind-phase"
 
+	// fmt.Sprintf(ShareModeAnnoTpl, uuid)
+	ShareModeAnnotationTpl = "sharemode.gpu.bytetrade.io/%s"
+	ShareModeExclusive     = "0"
+	ShareModeMemSlicing    = "1"
+	ShareModeTimeSlicing   = "2"
+
 	DeviceBindAllocating = "allocating"
 	DeviceBindFailed     = "failed"
 	DeviceBindSuccess    = "success"
@@ -60,6 +66,7 @@ type ContainerDevice struct {
 	Type      string
 	Usedmem   int32
 	Usedcores int32
+	ShareMode string
 }
 
 type ContainerDeviceRequest struct {
@@ -119,6 +126,7 @@ type DeviceUsage struct {
 	Numa        int
 	Type        string
 	Health      bool
+	ShareMode   string
 }
 
 type DeviceInfo struct {
@@ -133,6 +141,7 @@ type DeviceInfo struct {
 	MIGTemplate  []Geometry `json:"migtemplate,omitempty"`
 	Health       bool       `json:"health,omitempty"`
 	DeviceVendor string     `json:"devicevendor,omitempty"`
+	ShareMode    string     `json:"sharemode,omitempty"`
 }
 
 type NodeInfo struct {

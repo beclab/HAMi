@@ -125,6 +125,18 @@ func fitInCertainDevice(node *NodeUsage, request util.ContainerDeviceRequest, an
 			k.Coresreq = 100
 			//return false, tmpDevs
 		}
+
+		switch dev.ShareMode {
+		case util.ShareModeTimeSlicing:
+			k.Memreq = 0
+			k.MemPercentagereq = 101
+		case util.ShareModeExclusive:
+			k.Memreq = 0
+			k.MemPercentagereq = 100
+		default:
+			k.MemPercentagereq = 101
+		}
+
 		if k.Memreq > 0 {
 			memreq = k.Memreq
 		}
@@ -168,6 +180,7 @@ func fitInCertainDevice(node *NodeUsage, request util.ContainerDeviceRequest, an
 				Type:      k.Type,
 				Usedmem:   memreq,
 				Usedcores: k.Coresreq,
+				ShareMode: dev.ShareMode,
 			})
 		}
 		if k.Nums == 0 {
