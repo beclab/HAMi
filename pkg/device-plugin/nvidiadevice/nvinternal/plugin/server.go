@@ -523,7 +523,7 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 					response.Envs[modeKey] = devreq[0].ShareMode
 				}
 
-				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.kube-system:6000"
+				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.gpu-system:6000"
 				response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
 				response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
 				if plugin.schedulerConfig.DeviceMemoryScaling > 1 {
