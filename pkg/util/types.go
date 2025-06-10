@@ -34,6 +34,8 @@ const (
 	ShareModeMemSlicing    = "1"
 	ShareModeTimeSlicing   = "2"
 
+	AppNameLabelKey = "applications.app.bytetrade.io/name"
+
 	DeviceBindAllocating = "allocating"
 	DeviceBindFailed     = "failed"
 	DeviceBindSuccess    = "success"

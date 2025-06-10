@@ -114,3 +114,17 @@ func (m *nodeManager) ListNodes() (map[string]*util.NodeInfo, error) {
 	defer m.mutex.RUnlock()
 	return m.nodes, nil
 }
+
+func (m *nodeManager) UpdateDeviceShareMode(uuid, mode string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	for _, node := range m.nodes {
+		for _, dev := range node.Devices {
+			if dev.ID == uuid {
+				dev.ShareMode = mode
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("GPU %s not found", uuid)
+}
