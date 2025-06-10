@@ -314,6 +314,8 @@ func (dev *NvidiaGPUDevices) MutateAdmission(ctr *corev1.Container, p *corev1.Po
 
 		// set GPU UUID annotations to the pod if any GPUBinding is found
 		// set GPU memory resource if the found GPUBinding has memory configured
+		util.GPUManageLock.RLock()
+		defer util.GPUManageLock.RUnlock()
 		if err := dev.mutateByGPUBinding(ctr, p); err != nil {
 			return false, fmt.Errorf("failed to mutate Pod spec by GPU bindings: %v", err)
 		}
