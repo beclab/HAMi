@@ -460,6 +460,21 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 	klog.InfoS("Allocate", "request", reqs)
 	responses := kubeletdevicepluginv1beta1.AllocateResponse{}
 	nodename := os.Getenv(util.NodeNameEnvName)
+	node, err := util.GetNode(nodename)
+	if err != nil {
+		return &kubeletdevicepluginv1beta1.AllocateResponse{}, err
+	}
+
+	// get nvidia device info only
+	var nodeNvidiaDevices []*util.DeviceInfo
+	if deviceEncoded, ok := node.Annotations["hami.io/node-nvidia-register"]; ok {
+		nodeNvidiaDevices, err = util.DecodeNodeDevices(deviceEncoded)
+		if err != nil {
+			klog.Error("failed to decode node nvidia devices:", err)
+			return &kubeletdevicepluginv1beta1.AllocateResponse{}, err
+		}
+	}
+
 	current, err := util.GetPendingPod(ctx, nodename)
 	if err != nil {
 		//nodelock.ReleaseNodeLock(nodename, NodeLockNvidia, current)
@@ -521,6 +536,9 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 
 					modeKey := fmt.Sprintf("CUDA_DEVICE_GPU_MODE_%v", i)
 					response.Envs[modeKey] = devreq[0].ShareMode
+
+					realMemKey := fmt.Sprintf("CUDA_DEVICE_REAL_MEMORY_LIMIT_%v", i)
+					response.Envs[realMemKey] = fmt.Sprintf("%vm", nodeNvidiaDevices[i].Devmem)
 				}
 
 				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.gpu-system:6000"
