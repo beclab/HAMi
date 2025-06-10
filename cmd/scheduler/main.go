@@ -116,6 +116,11 @@ func start() error {
 	router.POST("/bind", routes.Bind(sher))
 	router.POST("/webhook", routes.WebHookRoute())
 	router.GET("/healthz", routes.HealthzRoute())
+
+	router.GET("/gpus", routes.ListGPUDetails(sher))
+	router.POST("/gpus/:id/mode", routes.SwitchGPUMode(sher))
+	router.POST("/gpus/:id/assign", routes.AssignGPUToApp(sher))
+
 	klog.Info("listen on ", config.HTTPBind)
 
 	if enableProfiling {

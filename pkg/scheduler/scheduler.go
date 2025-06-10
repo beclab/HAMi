@@ -35,6 +35,7 @@ import (
 	"k8s.io/klog/v2"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 
+	"github.com/Project-HAMi/HAMi/pkg/api/gpu/v1alpha1"
 	"github.com/Project-HAMi/HAMi/pkg/device"
 	"github.com/Project-HAMi/HAMi/pkg/k8sutil"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
@@ -460,6 +461,8 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 			Error:       "",
 		}, nil
 	}
+	util.GPUManageLock.RLock()
+	defer util.GPUManageLock.RUnlock()
 	annos := args.Pod.Annotations
 	s.delPod(args.Pod)
 	nodeUsage, failedNodes, err := s.getNodesUsage(args.NodeNames, args.Pod)
@@ -526,4 +529,43 @@ func genSuccessMsg(totalNodes int, target string, nodes []*policy.NodeScore) str
 	}
 	score := strings.Join(scores, ",")
 	return fmt.Sprintf(successMsg, target, totalNodes-len(nodes), len(nodes), score)
+}
+
+// ListGPUBindings returns all GPU bindings in the cluster
+func (s *Scheduler) ListGPUBindings() ([]*v1alpha1.GPUBinding, error) {
+	bindings := &v1alpha1.GPUBindingList{}
+	if err := client.GPUClient.List(context.Background(), bindings); err != nil {
+		return nil, fmt.Errorf("failed to list GPU bindings: %v", err)
+	}
+	result := make([]*v1alpha1.GPUBinding, len(bindings.Items))
+	for i := range bindings.Items {
+		result[i] = &bindings.Items[i]
+	}
+	return result, nil
+}
+
+// CreateGPUBinding creates a new GPU binding
+func (s *Scheduler) CreateGPUBinding(ctx context.Context, binding *v1alpha1.GPUBinding) error {
+	if err := client.GPUClient.Create(ctx, binding); err != nil {
+		return fmt.Errorf("failed to create GPU binding: %v", err)
+	}
+	return nil
+}
+
+// UpdateDeviceShareMode updates the share mode for a specific GPU device
+func (s *Scheduler) UpdateDeviceShareMode(uuid string, mode string) error {
+	nodes, err := s.ListNodes()
+	if err != nil {
+		return fmt.Errorf("failed to list nodes: %v", err)
+	}
+
+	for _, node := range nodes {
+		for i := range node.Devices {
+			if node.Devices[i].ID == uuid {
+				node.Devices[i].ShareMode = mode
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("GPU device %s not found", uuid)
 }
