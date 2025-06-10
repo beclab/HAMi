@@ -404,6 +404,10 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 	var nodeNvidiaDevices []*util.DeviceInfo
 	if deviceEncoded, ok := node.Annotations["hami.io/node-nvidia-register"]; ok {
 		nodeNvidiaDevices, err = util.DecodeNodeDevices(deviceEncoded)
+		if err != nil {
+			klog.Error("failed to decode node nvidia devices:", err)
+			return &kubeletdevicepluginv1beta1.AllocateResponse{}, err
+		}
 	}
 
 	current, err := util.GetPendingPod(ctx, nodename)
