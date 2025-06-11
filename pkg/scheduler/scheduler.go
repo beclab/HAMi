@@ -18,7 +18,9 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"maps"
 	"sort"
 	"strconv"
@@ -464,8 +466,21 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 			Error:       "",
 		}, nil
 	}
-	util.GPUManageLock.RLock()
-	defer util.GPUManageLock.RUnlock()
+
+	podHasGPUBinding := args.Pod.Annotations != nil && args.Pod.Annotations[nvidia.GPUUseUUID] != ""
+	// pod already has a GPUBinding, no new GPUBinding will be created
+	// thus acquire the lock for reading
+	if podHasGPUBinding {
+		util.GPUManageLock.RLock()
+		defer util.GPUManageLock.RUnlock()
+	} else {
+		// if pod has no GPU Binding,
+		// then it's possible for it to fall back to a GPU in timeslicing mode
+		// don't check device mode here because we haven't acquired lock yet
+		// and the mode could be switched by another goroutine
+		util.GPUManageLock.Lock()
+		defer util.GPUManageLock.Unlock()
+	}
 	annos := args.Pod.Annotations
 	s.delPod(args.Pod)
 	nodeUsage, failedNodes, err := s.getNodesUsage(args.NodeNames, args.Pod)
@@ -494,6 +509,54 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	klog.V(4).Infoln("nodeScores_len=", len((*nodeScores).NodeList))
 	sort.Sort(nodeScores)
 	m := (*nodeScores).NodeList[len((*nodeScores).NodeList)-1]
+
+	devlist, ok := m.Devices[nvidia.NvidiaGPUDevice]
+	if ok && len(devlist) > 0 && !podHasGPUBinding {
+		appName := args.Pod.Labels[util.AppNameLabelKey]
+		if appName == "" {
+			klog.V(4).InfoS("Cannot find the owner Application to create GPUBinding automatically",
+				"pod", args.Pod.Name)
+			err := errors.New("Cannot find the owner Application to create GPUBinding automatically")
+			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+			return nil, err
+		}
+		var uuid string
+		for _, cdev := range devlist {
+			for _, dev := range cdev {
+				if dev.ShareMode == util.ShareModeTimeSlicing && dev.UUID != "" {
+					uuid = dev.UUID
+				}
+			}
+		}
+		if uuid == "" {
+			klog.V(4).InfoS("Cannot find a GPU UUID to create GPUBinding automatically",
+				"pod", args.Pod.Name)
+			err := errors.New("Cannot find a GPU UUID to create GPUBinding automatically")
+			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+			return nil, err
+		}
+		autoBinding := &v1alpha1.GPUBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: strings.ToLower(fmt.Sprintf("%s-%s-%d", appName, uuid, time.Now().Unix())),
+			},
+			Spec: v1alpha1.GPUBindingSpec{
+				UUID:    uuid,
+				AppName: appName,
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						util.AppNameLabelKey: appName,
+					},
+				},
+			},
+		}
+		err := s.CreateGPUBinding(context.Background(), autoBinding)
+		if err != nil {
+			klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name)
+			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+			return nil, err
+		}
+	}
+
 	klog.InfoS("Scheduling pod to node",
 		"podNamespace", args.Pod.Namespace,
 		"podName", args.Pod.Name,
