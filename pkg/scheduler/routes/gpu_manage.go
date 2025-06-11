@@ -90,12 +90,6 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 			return
 		}
 
-		// if there is any GPU in timeslicing mode
-		// we get the apps with no GPUBinding that fall back to the GPU
-		// by listing all pods
-		// otherwise, we can avoid the unnecessary API call
-		var timeslicingGPUExists bool
-		var allPods []corev1.Pod
 		uuidToGPUDetails := make(map[string]*GPUDetail)
 
 		for _, node := range nodes {
@@ -106,21 +100,7 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 						DeviceInfo: device,
 					},
 				}
-				if device.ShareMode == util.ShareModeTimeSlicing {
-					timeslicingGPUExists = true
-				}
 			}
-		}
-
-		if timeslicingGPUExists {
-			podList, err := client.GetClient().CoreV1().Pods(metav1.NamespaceAll).List(r.Context(), metav1.ListOptions{})
-			if err != nil {
-				err = fmt.Errorf("failed to list pods: %v", err)
-				klog.Errorln(err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			allPods = podList.Items
 		}
 
 		bindings, err := s.ListGPUBindings()
@@ -145,7 +125,7 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 			gpuDetail.Apps = append(gpuDetail.Apps, appInfo)
 		}
 
-		for uuid, gpuDetail := range uuidToGPUDetails {
+		for _, gpuDetail := range uuidToGPUDetails {
 			if gpuDetail.ShareMode == util.ShareModeMemSlicing {
 				var allocated, available int64
 				for _, app := range gpuDetail.Apps {
@@ -162,40 +142,6 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 				}
 				gpuDetail.MemoryAllocated = &allocated
 				gpuDetail.MemoryAvailable = &available
-			}
-
-			// find pods with no explicit GPUBinding and has fallen back to this GPU
-			if gpuDetail.ShareMode == util.ShareModeTimeSlicing {
-				for _, pod := range allPods {
-					for _, annotation := range pod.Annotations {
-						if strings.Contains(annotation, uuid) {
-							var appName string
-							if pod.Labels != nil {
-								appName = pod.Labels[util.AppNameLabelKey]
-							}
-
-							// this should never happen
-							if appName == "" {
-								klog.Errorf("failed to find app name for pod %s/%s", pod.Namespace, pod.Name)
-								appName = fmt.Sprintf("pod/%s/%s", pod.Namespace, pod.Name)
-							}
-
-							// do not duplicate the apps already found by GPUBindings
-							// as GPUs in timeslicing mode can also be assigned to apps by user
-							var hasBinding bool
-							for _, appInfo := range gpuDetail.Apps {
-								if appInfo.AppName == appName {
-									hasBinding = true
-									break
-								}
-							}
-							if hasBinding {
-								continue
-							}
-							gpuDetail.Apps = append(gpuDetail.Apps, GPUAppInfo{AppName: appName})
-						}
-					}
-				}
 			}
 		}
 
