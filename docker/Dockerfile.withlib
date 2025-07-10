@@ -1,4 +1,4 @@
-ARG GOLANG_IMAGE=golang:1.22.5-bullseye
+ARG GOLANG_IMAGE=golang:1.24.4-bullseye
 
 FROM $GOLANG_IMAGE AS gobuild
 ARG GOPROXY
