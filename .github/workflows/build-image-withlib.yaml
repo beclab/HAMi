@@ -48,7 +48,7 @@ jobs:
           platforms: linux/arm64,linux/amd64
           build-args: |
             VERSION=${{ inputs.imageTag }}
-            GOLANG_IMAGE=golang:1.22.5-bullseye
+            GOLANG_IMAGE=golang:1.24.4-bullseye
             NVIDIA_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu20.04
             DEST_DIR=/usr/local
           tags: beclab/hami:${{ inputs.imageTag }}
