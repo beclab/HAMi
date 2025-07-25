@@ -214,14 +214,35 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			req.Memory = nil
 		}
 
-		// validate request based on share mode
+		// if card is in exclusive mode, force out any already assigned app
 		if targetDevice.ShareMode == util.ShareModeExclusive {
+			pods := s.ListPodsInfo()
+			for _, pod := range pods {
+				for _, pdev := range pod.Devices {
+					for _, cdevs := range pdev {
+						for _, cdev := range cdevs {
+							if cdev.UUID == uuid {
+								klog.Infof("Forcing out pod %s/%s of exclusive GPU %s in favor of %s", pod.Namespace, pod.Name, uuid, req.AppName)
+								err = ctrlclient.IgnoreNotFound(client.GetClient().CoreV1().Pods(pod.Namespace).Delete(r.Context(), pod.Name, metav1.DeleteOptions{}))
+								if err != nil {
+									err = fmt.Errorf("failed to delete existing pod occupying GPU %s/%s: %v", pod.Namespace, pod.Name, err)
+									klog.Errorln(err)
+									http.Error(w, err.Error(), http.StatusInternalServerError)
+									return
+								}
+							}
+						}
+					}
+				}
+			}
 			for _, binding := range bindings {
 				if binding.Spec.UUID == uuid && binding.Spec.AppName != req.AppName {
-					err = fmt.Errorf("GPU %s is in exclusive mode and already assigned to app %s, refuse assigning to app %s", uuid, binding.Spec.AppName, req.AppName)
-					klog.Warningln(err)
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
+					if err := ctrlclient.IgnoreNotFound(util.DeleteGPUBinding(r.Context(), binding.Name)); err != nil {
+						err = fmt.Errorf("failed to delete existing GPUBinding %s: %v", binding.Name, err)
+						klog.Errorln(err)
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				}
 			}
 		}
