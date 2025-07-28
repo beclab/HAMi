@@ -540,10 +540,10 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.os-gpu:6000"
 				response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
 				response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
-				if *plugin.schedulerConfig.DeviceMemoryScaling > 1 {
+				if plugin.schedulerConfig.DeviceMemoryScaling != nil && *plugin.schedulerConfig.DeviceMemoryScaling > 1 {
 					response.Envs["CUDA_OVERSUBSCRIBE"] = "true"
 				}
-				if *plugin.schedulerConfig.LogLevel != "" {
+				if plugin.schedulerConfig.LogLevel != nil && *plugin.schedulerConfig.LogLevel != "" {
 					response.Envs["LIBCUDA_LOG_LEVEL"] = string(*plugin.schedulerConfig.LogLevel)
 				}
 				if plugin.schedulerConfig.DisableCoreLimit {
@@ -626,13 +626,13 @@ func (plugin *NvidiaDevicePlugin) getAllocateResponse(requestIds []string) (*kub
 			response.Envs = plugin.apiEnvs(plugin.deviceListEnvvar, []string{deviceListAsVolumeMountsContainerPathRoot})
 			response.Mounts = plugin.apiMounts(deviceIDs)
 		}*/
-	if *plugin.config.Flags.Plugin.PassDeviceSpecs {
+	if plugin.config.Flags.Plugin.PassDeviceSpecs != nil && *plugin.config.Flags.Plugin.PassDeviceSpecs {
 		response.Devices = plugin.apiDeviceSpecs(*plugin.config.Flags.NvidiaDriverRoot, requestIds)
 	}
-	if *plugin.config.Flags.GDSEnabled {
+	if plugin.config.Flags.GDSEnabled != nil && *plugin.config.Flags.GDSEnabled {
 		response.Envs["NVIDIA_GDS"] = "enabled"
 	}
-	if *plugin.config.Flags.MOFEDEnabled {
+	if plugin.config.Flags.MOFEDEnabled != nil && *plugin.config.Flags.MOFEDEnabled {
 		response.Envs["NVIDIA_MOFED"] = "enabled"
 	}
 
@@ -653,10 +653,10 @@ func (plugin *NvidiaDevicePlugin) getAllocateResponseForCDI(responseID string, d
 		devices = append(devices, plugin.cdiHandler.QualifiedName("gpu", id))
 	}
 
-	if *plugin.config.Flags.GDSEnabled {
+	if plugin.config.Flags.GDSEnabled != nil && *plugin.config.Flags.GDSEnabled {
 		devices = append(devices, plugin.cdiHandler.QualifiedName("gds", "all"))
 	}
-	if *plugin.config.Flags.MOFEDEnabled {
+	if plugin.config.Flags.MOFEDEnabled != nil && *plugin.config.Flags.MOFEDEnabled {
 		devices = append(devices, plugin.cdiHandler.QualifiedName("mofed", "all"))
 	}
 
@@ -718,10 +718,10 @@ func (plugin *NvidiaDevicePlugin) dial(unixSocketPath string, timeout time.Durat
 
 func (plugin *NvidiaDevicePlugin) deviceIDsFromAnnotatedDeviceIDs(ids []string) []string {
 	var deviceIDs []string
-	if *plugin.config.Flags.Plugin.DeviceIDStrategy == spec.DeviceIDStrategyUUID {
+	if plugin.config.Flags.Plugin.DeviceIDStrategy != nil && *plugin.config.Flags.Plugin.DeviceIDStrategy == spec.DeviceIDStrategyUUID {
 		deviceIDs = rm.AnnotatedIDs(ids).GetIDs()
 	}
-	if *plugin.config.Flags.Plugin.DeviceIDStrategy == spec.DeviceIDStrategyIndex {
+	if plugin.config.Flags.Plugin.DeviceIDStrategy != nil && *plugin.config.Flags.Plugin.DeviceIDStrategy == spec.DeviceIDStrategyIndex {
 		deviceIDs = plugin.rm.Devices().Subset(ids).GetIndices()
 	}
 	return deviceIDs
