@@ -132,6 +132,7 @@ func start() error {
 	router.GET("/gpus", routes.ListGPUDetails(sher))
 	router.POST("/gpus/:id/mode", routes.SwitchGPUMode(sher))
 	router.POST("/gpus/:id/assign", routes.AssignGPUToApp(sher))
+	router.POST("/gpus/:id/unassign", routes.UnassignGPUFromApp(sher))
 
 	klog.Info("listen on ", config.HTTPBind)
 

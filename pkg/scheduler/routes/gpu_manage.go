@@ -3,11 +3,12 @@ package routes
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	"net/http"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"strings"
 	"time"
+
+	"github.com/Project-HAMi/HAMi/pkg/util/client"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/julienschmidt/httprouter"
 	corev1 "k8s.io/api/core/v1"
@@ -46,11 +47,15 @@ type SwitchModeRequest struct {
 	Mode string `json:"mode"`
 }
 
+type UnassignGPURequest struct {
+	AppName string `json:"appName"`
+}
+
 func ListGPUInfos(s *scheduler.Scheduler) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		klog.Infoln("Listing all GPUs")
-		util.GPUManageLock.RLock()
-		defer util.GPUManageLock.RUnlock()
+		util.GPUManageLock.Lock()
+		defer util.GPUManageLock.Unlock()
 
 		nodes, err := s.ListNodes()
 		if err != nil {
@@ -80,8 +85,8 @@ func ListGPUInfos(s *scheduler.Scheduler) httprouter.Handle {
 
 func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		util.GPUManageLock.RLock()
-		defer util.GPUManageLock.RUnlock()
+		util.GPUManageLock.Lock()
+		defer util.GPUManageLock.Unlock()
 
 		nodes, err := s.ListNodes()
 		if err != nil {
@@ -145,7 +150,7 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 			}
 		}
 
-		var gpuDetails []GPUDetail
+		gpuDetails := make([]GPUDetail, 0)
 		for _, gpuDetail := range uuidToGPUDetails {
 			gpuDetails = append(gpuDetails, *gpuDetail)
 		}
@@ -185,10 +190,12 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 		}
 
 		var targetDevice *util.DeviceInfo
+		var targetNodeName string
 		for _, node := range nodes {
 			for _, device := range node.Devices {
 				if device.ID == uuid {
 					targetDevice = &device
+					targetNodeName = node.Node.Name
 					break
 				}
 			}
@@ -207,6 +214,26 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			klog.Errorln(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// validate node consistency for multi-binding: an app cannot bind GPUs across different nodes
+		uuidToNodeName := make(map[string]string)
+		for _, node := range nodes {
+			for _, device := range node.Devices {
+				uuidToNodeName[device.ID] = node.Node.Name
+			}
+		}
+		for _, binding := range bindings {
+			if binding.Spec.AppName != req.AppName {
+				continue
+			}
+			existingNode := uuidToNodeName[binding.Spec.UUID]
+			if existingNode != "" && existingNode != targetNodeName {
+				err = fmt.Errorf("app %s already has GPUBinding on node %s, requested GPU is on node %s; cross-node multi-binding is not allowed", req.AppName, existingNode, targetNodeName)
+				klog.Warningln(err)
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 		}
 
 		if targetDevice.ShareMode != util.ShareModeMemSlicing && req.Memory != nil {
@@ -287,17 +314,7 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			return
 		}
 
-		// delete existing binding for this app if any
-		for _, binding := range bindings {
-			if binding.Spec.AppName == req.AppName {
-				if err := ctrlclient.IgnoreNotFound(util.DeleteGPUBinding(r.Context(), binding.Name)); err != nil {
-					err = fmt.Errorf("failed to delete existing binding for app %s: %v", req.AppName, err)
-					klog.Errorln(err)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			}
-		}
+		// keep existing bindings for this app to support multi-binding
 
 		newBinding := &v1alpha1.GPUBinding{
 			ObjectMeta: metav1.ObjectMeta{
@@ -428,6 +445,61 @@ func SwitchGPUMode(s *scheduler.Scheduler) httprouter.Handle {
 			klog.Errorln(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func UnassignGPUFromApp(s *scheduler.Scheduler) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		var req UnassignGPURequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("failed to decode request: %v", err), http.StatusBadRequest)
+			return
+		}
+		uuid := ps.ByName("id")
+
+		if uuid == "" || req.AppName == "" {
+			http.Error(w, "UUID and AppName are required", http.StatusBadRequest)
+			return
+		}
+
+		klog.Infof("Unassigning GPU %s from app %s", uuid, req.AppName)
+		util.GPUManageLock.Lock()
+		defer util.GPUManageLock.Unlock()
+
+		bindings, err := s.ListGPUBindings()
+		if err != nil {
+			klog.Errorln(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		toDelete := make([]string, 0)
+		for _, binding := range bindings {
+			if binding.Spec.UUID == uuid && binding.Spec.AppName == req.AppName {
+				toDelete = append(toDelete, binding.Name)
+			}
+		}
+
+		if len(toDelete) == 0 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if err := ctrlclient.IgnoreNotFound(util.DeletePodsBelongToApp(r.Context(), req.AppName)); err != nil {
+			klog.Errorln(fmt.Errorf("failed to delete pods of app %s: %v", req.AppName, err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for _, name := range toDelete {
+			if err := ctrlclient.IgnoreNotFound(util.DeleteGPUBinding(r.Context(), name)); err != nil {
+				klog.Errorln(fmt.Errorf("failed to delete GPUBinding %s: %v", name, err))
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

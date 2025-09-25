@@ -35,7 +35,6 @@ package plugin
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -478,7 +477,7 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 	}
 	klog.Infof("Allocate pod name is %s/%s, annotation is %+v", current.Namespace, current.Name, current.Annotations)
 
-	for idx, req := range reqs.ContainerRequests {
+	for _, req := range reqs.ContainerRequests {
 		// If the devices being allocated are replicas, then (conditionally)
 		// error out if more than one resource is being allocated.
 
@@ -509,10 +508,6 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 			if err != nil {
 				device.PodAllocationFailed(nodename, current, NodeLockNvidia)
 				return &kubeletdevicepluginv1beta1.AllocateResponse{}, err
-			}
-			if len(devreq) != len(reqs.ContainerRequests[idx].DevicesIDs) {
-				device.PodAllocationFailed(nodename, current, NodeLockNvidia)
-				return &kubeletdevicepluginv1beta1.AllocateResponse{}, errors.New("device number not matched")
 			}
 			response, err := plugin.getAllocateResponse(plugin.GetContainerDeviceStrArray(devreq))
 			if err != nil {
