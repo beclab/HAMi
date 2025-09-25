@@ -34,6 +34,7 @@ type podInfo struct {
 	NodeID    string
 	Devices   util.PodDevices
 	CtrIDs    []string
+	Labels    map[string]string
 }
 
 // PodUseDeviceStat counts pod use device info.
@@ -67,6 +68,7 @@ func (m *podManager) addPod(pod *corev1.Pod, nodeID string, devices util.PodDevi
 			Namespace: pod.Namespace,
 			NodeID:    nodeID,
 			Devices:   devices,
+			Labels:    pod.Labels,
 		}
 		m.pods[pod.UID] = pi
 		klog.InfoS("Pod added",

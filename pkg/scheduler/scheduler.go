@@ -20,12 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"maps"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -118,6 +119,28 @@ func (s *Scheduler) onDelPod(obj any) {
 		return
 	}
 	s.delPod(pod)
+
+	// release node lock if this pod owned one on a best-effort basis.
+	// this is safe because ReleaseNodeLock checks the lock owner and no-ops if different.
+	nodeName := pod.Annotations[util.AssignedNodeAnnotations]
+	if nodeName == "" {
+		return
+	}
+	p := pod.DeepCopy()
+	go func(nodeName string, p *corev1.Pod) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		node, err := s.kubeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			klog.Error("Skip releasing node lock: failed to get node", "node", nodeName, "pod", klog.KObj(p), "err", err)
+			return
+		}
+		for _, dev := range device.GetDevices() {
+			if err := dev.ReleaseNodeLock(node, p); err != nil {
+				klog.Error("ReleaseNodeLock returned error", "node", nodeName, "pod", klog.KObj(p), "err", err)
+			}
+		}
+	}(nodeName, p)
 }
 
 func (s *Scheduler) Start() {
@@ -463,21 +486,43 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		}, nil
 	}
 
-	podHasGPUBinding := args.Pod.Annotations != nil && args.Pod.Annotations[nvidia.GPUUseUUID] != ""
-	// pod already has a GPUBinding, no new GPUBinding will be created
-	// thus acquire the lock for reading
-	if podHasGPUBinding {
-		util.GPUManageLock.RLock()
-		defer util.GPUManageLock.RUnlock()
-	} else {
-		// if pod has no GPU Binding,
-		// then it's possible for it to fall back to a GPU in timeslicing mode
-		// don't check device mode here because we haven't acquired lock yet
-		// and the mode could be switched by another goroutine
-		util.GPUManageLock.Lock()
-		defer util.GPUManageLock.Unlock()
-	}
+	// Always serialize Filter under GPUManageLock to avoid races with mode switches/binding changes
+	util.GPUManageLock.Lock()
+	defer util.GPUManageLock.Unlock()
 	annos := args.Pod.Annotations
+	if annos == nil {
+		annos = make(map[string]string)
+	}
+	appName := args.Pod.Labels[util.AppNameLabelKey]
+	hasBindings := false
+	if appName != "" {
+		bindings, err := s.ListGPUBindings()
+		if err != nil {
+			klog.ErrorS(err, "Failed to list GPUBindings for Filter", "pod", klog.KObj(args.Pod))
+			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+			return nil, err
+		}
+		var uuids []string
+		for _, b := range bindings {
+			if b.Spec.AppName != appName {
+				continue
+			}
+			if !b.MatchPod(args.Pod) {
+				continue
+			}
+			hasBindings = true
+			uuids = append(uuids, b.Spec.UUID)
+			if b.Spec.Memory != nil {
+				annos[fmt.Sprintf(nvidia.AppGPUMemAnnotationTpl, b.Spec.UUID)] = b.Spec.Memory.String()
+			}
+		}
+		if len(uuids) > 0 {
+			annos[nvidia.GPUUseUUID] = strings.Join(uuids, ",")
+		} else {
+			// Ensure the hint is empty if nothing matches
+			annos[nvidia.GPUUseUUID] = ""
+		}
+	}
 	s.delPod(args.Pod)
 	nodeUsage, failedNodes, err := s.getNodesUsage(args.NodeNames, args.Pod)
 	if err != nil {
@@ -507,7 +552,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	m := (*nodeScores).NodeList[len((*nodeScores).NodeList)-1]
 
 	devlist, ok := m.Devices[nvidia.NvidiaGPUDevice]
-	if ok && len(devlist) > 0 && !podHasGPUBinding {
+	if ok && len(devlist) > 0 && !hasBindings {
 		appName := args.Pod.Labels[util.AppNameLabelKey]
 		if appName == "" {
 			klog.V(4).InfoS("Cannot find the owner Application to create GPUBinding automatically",

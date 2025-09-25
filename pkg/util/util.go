@@ -22,12 +22,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/Project-HAMi/HAMi/pkg/api/gpu/v1alpha1"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Project-HAMi/HAMi/pkg/api/gpu/v1alpha1"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	"github.com/Project-HAMi/HAMi/pkg/util/nodelock"
@@ -54,12 +55,8 @@ var (
 	SupportDevices   map[string]string
 	HandshakeAnnos   map[string]string
 
-	// GPUManageLock helps to avoid race conditions where
-	// GPU settings are being manipulated
-	// e.g., mode switch, assignment to apps
-	// and scheduling decisions are being made
-	// based on the settings at the same time
-	GPUManageLock sync.RWMutex
+	// GPUManageLock serializes GPU management operations and scheduling decisions
+	GPUManageLock sync.Mutex
 )
 
 func init() {

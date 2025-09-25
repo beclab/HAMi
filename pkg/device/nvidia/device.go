@@ -17,14 +17,10 @@ limitations under the License.
 package nvidia
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
-	gpuv1alpha1 "github.com/Project-HAMi/HAMi/pkg/api/gpu/v1alpha1"
-	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -56,6 +52,14 @@ const (
 	// GPUNoUseUUID is user can not use specify GPU device for set GPU UUID.
 	GPUNoUseUUID = "nvidia.com/nouse-gpuuuid"
 	AllocateMode = "nvidia.com/vgpu-mode"
+
+	// app level GPU consumption policy
+	AppPodGPUConsumePolicyKey = "gpu.bytetrade.io/app-pod-consume-policy"
+	// consumes all GPUs bound to this app in a single pod
+	AppPodGPUConsumePolicyAll = "all"
+	// consumes a single GPU in a single pod
+	AppPodGPUConsumePolicySingle = "single"
+	AppGPUMemAnnotationTpl       = "gpu.bytetrade.io/app-mem-%s"
 
 	MigMode      = "mig"
 	HamiCoreMode = "hami-core"
@@ -340,14 +344,6 @@ func (dev *NvidiaGPUDevices) MutateAdmission(ctr *corev1.Container, p *corev1.Po
 		// Set runtime class name if it is not set by user and the runtime class name is configured
 		if p.Spec.RuntimeClassName == nil && dev.config.RuntimeClassName != "" {
 			p.Spec.RuntimeClassName = &dev.config.RuntimeClassName
-		}
-
-		// set GPU UUID annotations to the pod if any GPUBinding is found
-		// set GPU memory resource if the found GPUBinding has memory configured
-		util.GPUManageLock.RLock()
-		defer util.GPUManageLock.RUnlock()
-		if err := dev.mutateByGPUBinding(ctr, p); err != nil {
-			return false, fmt.Errorf("failed to mutate Pod spec by GPU bindings: %v", err)
 		}
 	}
 
@@ -687,7 +683,16 @@ func (nv *NvidiaGPUDevices) Fit(devices []*util.DeviceUsage, request util.Contai
 			k.MemPercentagereq = 101
 		}
 
-		if k.Memreq > 0 {
+		if memStr, ok := annos[fmt.Sprintf(AppGPUMemAnnotationTpl, dev.ID)]; ok && memStr != "" {
+			q, err := resource.ParseQuantity(memStr)
+			if err == nil {
+				qv := q.Value()
+				if qv > 0 {
+					memreq = int32(qv)
+				}
+			}
+		}
+		if k.Memreq > 0 && memreq == 0 {
 			memreq = k.Memreq
 		}
 		if k.MemPercentagereq != 101 && k.Memreq == 0 {
@@ -770,56 +775,6 @@ func (nv *NvidiaGPUDevices) Fit(devices []*util.DeviceUsage, request util.Contai
 		klog.V(5).InfoS(common.AllocatedCardsInsufficientRequest, "pod", klog.KObj(pod), "request", originReq, "allocated", len(tmpDevs))
 	}
 	return false, tmpDevs, common.GenReason(reason, len(devices))
-}
-
-func (dev *NvidiaGPUDevices) mutateByGPUBinding(ctr *corev1.Container, pod *corev1.Pod) error {
-	gpubindingList := &gpuv1alpha1.GPUBindingList{}
-	err := client.GPUClient.List(context.Background(), gpubindingList)
-	if err != nil {
-		return fmt.Errorf("failed to list gpubindings: %v", err)
-	}
-
-	if pod.Annotations == nil {
-		pod.Annotations = make(map[string]string)
-	}
-	bindings := gpubindingList.Items
-	var matchedBindings []gpuv1alpha1.GPUBinding
-
-	// sort bindings by their creation time
-	// i.e., a newer binding takes precedence than an older one
-	// currently, there should always be exact one binding for a specific pod
-	// which should be guaranteed by upstream services creating bindings
-	// but if this happens, log a warning and use the latest one
-	// the uuid annotation and memory resource overwrite logic
-	// makes sure there's only one card with a specific memory resource (if any) bound to the pod
-	sort.Slice(bindings, func(i, j int) bool { return bindings[i].CreationTimestamp.Before(&bindings[j].CreationTimestamp) })
-	for _, binding := range bindings {
-		if !binding.MatchPod(pod) {
-			continue
-		}
-		matchedBindings = append(matchedBindings, binding)
-	}
-	if len(matchedBindings) == 0 {
-		klog.Infof("no GPUBinding found for pod %s", pod.Name)
-
-		// overwrite any already existing annotation
-		// to avoid the pod escaping our control
-		pod.Annotations[GPUUseUUID] = ""
-		return nil
-	}
-	if len(matchedBindings) > 1 {
-		klog.Warningf("more than one GPUBindings found for pod %s:", pod.Name)
-		for _, binding := range matchedBindings {
-			klog.Warning(binding.Name)
-		}
-	}
-	matchedBinding := matchedBindings[len(matchedBindings)-1]
-	klog.Infof("using GPUBinding %s for pod %s", matchedBinding.Name, pod.Name)
-	pod.Annotations[GPUUseUUID] = matchedBinding.Spec.UUID
-	if matchedBinding.Spec.Memory != nil {
-		ctr.Resources.Limits[corev1.ResourceName(dev.config.ResourceMemoryName)] = *matchedBinding.Spec.Memory
-	}
-	return nil
 }
 
 func generateCombinations(request util.ContainerDeviceRequest, tmpDevs map[string]util.ContainerDevices) []util.ContainerDevices {
