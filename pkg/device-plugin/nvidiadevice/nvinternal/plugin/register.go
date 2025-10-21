@@ -142,6 +142,9 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 			klog.Error("nvml get name error ret=", ret)
 			panic(0)
 		}
+		if !strings.Contains(Model, "NVIDIA") {
+			Model = fmt.Sprintf("%v-%v", "NVIDIA", Model)
+		}
 
 		registeredmem := int32(memoryTotal / 1024 / 1024)
 		if *plugin.schedulerConfig.DeviceMemoryScaling != 1 {
@@ -171,7 +174,7 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 			Count:   int32(*plugin.schedulerConfig.DeviceSplitCount),
 			Devmem:  registeredmem,
 			Devcore: int32(*plugin.schedulerConfig.DeviceCoreScaling * 100),
-			Type:    fmt.Sprintf("%v-%v", "NVIDIA", Model),
+			Type:    Model,
 			Numa:    numa,
 			Mode:    plugin.operatingMode,
 			Health:  health,
