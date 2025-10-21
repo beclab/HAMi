@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,6 +155,13 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 		for _, gpuDetail := range uuidToGPUDetails {
 			gpuDetails = append(gpuDetails, *gpuDetail)
 		}
+
+		sort.SliceStable(gpuDetails, func(i, j int) bool {
+			return gpuDetails[i].NodeName < gpuDetails[j].NodeName
+		})
+		sort.SliceStable(gpuDetails, func(i, j int) bool {
+			return gpuDetails[i].ID < gpuDetails[j].ID
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		err = json.NewEncoder(w).Encode(gpuDetails)
