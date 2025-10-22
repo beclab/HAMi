@@ -224,6 +224,8 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			return
 		}
 
+		var existingBinding *v1alpha1.GPUBinding
+
 		// validate node consistency for multi-binding: an app cannot bind GPUs across different nodes
 		uuidToNodeName := make(map[string]string)
 		for _, node := range nodes {
@@ -235,11 +237,26 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			if binding.Spec.AppName != req.AppName {
 				continue
 			}
+			if binding.Spec.UUID == uuid {
+				existingBinding = binding
+			}
 			existingNode := uuidToNodeName[binding.Spec.UUID]
 			if existingNode != "" && existingNode != targetNodeName {
 				err = fmt.Errorf("app %s already has GPUBinding on node %s, requested GPU is on node %s; cross-node multi-binding is not allowed", req.AppName, existingNode, targetNodeName)
 				klog.Warningln(err)
 				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+		}
+
+		if existingBinding != nil {
+			klog.Warningf("Attempting to assign app %s to already bound GPU %s in mode %s", req.AppName, uuid, targetDevice.ShareMode)
+			if targetDevice.ShareMode != util.ShareModeMemSlicing {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if req.Memory == nil || req.Memory.Value() == 0 || req.Memory.Value() == existingBinding.Spec.Memory.Value() {
+				w.WriteHeader(http.StatusOK)
 				return
 			}
 		}
@@ -311,6 +328,18 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
+
+			if existingBinding != nil {
+				newBinding := existingBinding.DeepCopy()
+				newBinding.Spec.Memory = req.Memory
+				err = client.GPUClient.Patch(r.Context(), newBinding, ctrlclient.MergeFrom(existingBinding))
+				if err != nil {
+					err = fmt.Errorf("failed to patch GPUBinding %s: %v", existingBinding.Name, err)
+					klog.Errorln(err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 		}
 
 		// delete existing pods for this app
@@ -322,7 +351,10 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 			return
 		}
 
-		// keep existing bindings for this app to support multi-binding
+		if existingBinding != nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
 		newBinding := &v1alpha1.GPUBinding{
 			ObjectMeta: metav1.ObjectMeta{
