@@ -46,6 +46,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/policy"
 	"github.com/Project-HAMi/HAMi/pkg/util"
 	"github.com/Project-HAMi/HAMi/pkg/util/client"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Scheduler struct {
@@ -263,6 +264,78 @@ func (s *Scheduler) RegisterFromNodeAnnotations() {
 		_, _, err = s.getNodesUsage(&nodeNames, nil)
 		if err != nil {
 			klog.ErrorS(err, "Failed to get node usage", "nodeNames", nodeNames)
+		}
+	}
+}
+
+func (s *Scheduler) CleanupGPUBindingsLoop() {
+	klog.InfoS("Starting CleanupGPUBindingsLoop")
+	defer klog.InfoS("Exiting CleanupGPUBindingsLoop")
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			util.GPUManageLock.Lock()
+			func() {
+				defer util.GPUManageLock.Unlock()
+				nodes, err := s.ListNodes()
+				if err != nil {
+					klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to list nodes")
+					return
+				}
+				validUUIDs := make(map[string]struct{})
+				for _, n := range nodes {
+					for _, d := range n.Devices {
+						validUUIDs[d.ID] = struct{}{}
+					}
+				}
+				bindings, err := s.ListGPUBindings()
+				if err != nil {
+					klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to list GPUBindings")
+					return
+				}
+				toDelete := make([]string, 0)
+
+				type key struct {
+					app  string
+					uuid string
+				}
+				group := make(map[key][]*v1alpha1.GPUBinding)
+				for _, b := range bindings {
+					if _, ok := validUUIDs[b.Spec.UUID]; !ok {
+						toDelete = append(toDelete, b.Name)
+						continue
+					}
+					k := key{app: b.Spec.AppName, uuid: b.Spec.UUID}
+					group[k] = append(group[k], b)
+				}
+				for _, list := range group {
+					if len(list) <= 1 {
+						continue
+					}
+					sort.SliceStable(list, func(i, j int) bool {
+						return list[i].CreationTimestamp.Time.Before(list[j].CreationTimestamp.Time)
+					})
+					for idx := 0; idx < len(list)-1; idx++ {
+						toDelete = append(toDelete, list[idx].Name)
+					}
+				}
+				if len(toDelete) == 0 {
+					return
+				}
+				klog.InfoS("CleanupGPUBindingsLoop: deleting stale/duplicate GPUBindings", "count", len(toDelete))
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				for _, name := range toDelete {
+					if err := ctrlclient.IgnoreNotFound(util.DeleteGPUBinding(ctx, name)); err != nil {
+						klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to delete GPUBinding", "name", name)
+					}
+				}
+			}()
+		case <-s.stopCh:
+			return
 		}
 	}
 }
