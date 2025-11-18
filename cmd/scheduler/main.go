@@ -120,6 +120,7 @@ func start() error {
 
 	// start monitor metrics
 	go sher.RegisterFromNodeAnnotations()
+	go sher.CleanupGPUBindingsLoop()
 	go initMetrics(config.MetricsBindAddress)
 
 	// start http server
@@ -130,6 +131,7 @@ func start() error {
 	router.GET("/healthz", routes.HealthzRoute())
 
 	router.GET("/gpus", routes.ListGPUDetails(sher))
+	router.PUT("/gpus/assignments/bulk", routes.BulkManageAssignments(sher))
 	router.POST("/gpus/:id/mode", routes.SwitchGPUMode(sher))
 	router.POST("/gpus/:id/assign", routes.AssignGPUToApp(sher))
 	router.POST("/gpus/:id/unassign", routes.UnassignGPUFromApp(sher))
