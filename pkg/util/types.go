@@ -142,6 +142,7 @@ type DeviceInfo struct {
 	Type         string         `json:"type,omitempty"`
 	Numa         int            `json:"numa,omitempty"`
 	Mode         string         `json:"mode,omitempty"`
+	Architecture int32          `json:"architecture,omitempty"`
 	MIGTemplate  []Geometry     `json:"migtemplate,omitempty"`
 	Health       bool           `json:"health,omitempty"`
 	DeviceVendor string         `json:"devicevendor,omitempty"`
