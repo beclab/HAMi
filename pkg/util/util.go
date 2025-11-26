@@ -161,7 +161,7 @@ func DecodeNodeDevices(str string) ([]*DeviceInfo, error) {
 	for _, val := range tmp {
 		if strings.Contains(val, ",") {
 			items := strings.Split(val, ",")
-			if len(items) == 7 || len(items) == 9 {
+			if len(items) == 7 || len(items) == 9 || len(items) == 10 {
 				count, _ := strconv.ParseInt(items[1], 10, 32)
 				devmem, _ := strconv.ParseInt(items[2], 10, 32)
 				devcore, _ := strconv.ParseInt(items[3], 10, 32)
@@ -169,9 +169,13 @@ func DecodeNodeDevices(str string) ([]*DeviceInfo, error) {
 				numa, _ := strconv.Atoi(items[5])
 				mode := "hami-core"
 				index := 0
-				if len(items) == 9 {
+				architecture := int64(0)
+				if len(items) >= 9 {
 					index, _ = strconv.Atoi(items[7])
 					mode = items[8]
+				}
+				if len(items) == 10 {
+					architecture, _ = strconv.ParseInt(items[9], 10, 32)
 				}
 				count32, err := safecast.ToInt32(count)
 				if err != nil {
@@ -185,16 +189,21 @@ func DecodeNodeDevices(str string) ([]*DeviceInfo, error) {
 				if err != nil {
 					return []*DeviceInfo{}, errors.New("node annotations not decode successfully")
 				}
+				arch32, err := safecast.ToInt32(architecture)
+				if err != nil {
+					return []*DeviceInfo{}, errors.New("node annotations not decode successfully")
+				}
 				i := DeviceInfo{
-					ID:      items[0],
-					Count:   count32,
-					Devmem:  devmem32,
-					Devcore: devcore32,
-					Type:    items[4],
-					Numa:    numa,
-					Health:  health,
-					Mode:    mode,
-					Index:   uint(index),
+					ID:           items[0],
+					Count:        count32,
+					Devmem:       devmem32,
+					Devcore:      devcore32,
+					Type:         items[4],
+					Numa:         numa,
+					Health:       health,
+					Mode:         mode,
+					Index:        uint(index),
+					Architecture: arch32,
 				}
 				retval = append(retval, &i)
 			} else {
@@ -233,6 +242,8 @@ func EncodeNodeDevices(dlist []*DeviceInfo) string {
 		builder.WriteString(strconv.Itoa(int(val.Index)))
 		builder.WriteString(",")
 		builder.WriteString(val.Mode)
+		builder.WriteString(",")
+		builder.WriteString(strconv.Itoa(int(val.Architecture)))
 		builder.WriteString(OneContainerMultiDeviceSplitSymbol)
 		//tmp += val.ID + "," + strconv.FormatInt(int64(val.Count), 10) + "," + strconv.Itoa(int(val.Devmem)) + "," + strconv.Itoa(int(val.Devcore)) + "," + val.Type + "," + strconv.Itoa(val.Numa) + "," + strconv.FormatBool(val.Health) + "," + strconv.Itoa(val.Index) + OneContainerMultiDeviceSplitSymbol
 	}

@@ -168,16 +168,22 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 		if err != nil {
 			klog.ErrorS(err, "failed to get numa information", "idx", idx)
 		}
+		architecture, ret := ndev.GetArchitecture()
+		if ret != nvml.SUCCESS {
+			klog.Error("nvml get architecture error ret=", ret)
+			panic(0)
+		}
 		res = append(res, &util.DeviceInfo{
-			ID:      UUID,
-			Index:   uint(idx),
-			Count:   int32(*plugin.schedulerConfig.DeviceSplitCount),
-			Devmem:  registeredmem,
-			Devcore: int32(*plugin.schedulerConfig.DeviceCoreScaling * 100),
-			Type:    Model,
-			Numa:    numa,
-			Mode:    plugin.operatingMode,
-			Health:  health,
+			ID:           UUID,
+			Index:        uint(idx),
+			Count:        int32(*plugin.schedulerConfig.DeviceSplitCount),
+			Devmem:       registeredmem,
+			Devcore:      int32(*plugin.schedulerConfig.DeviceCoreScaling * 100),
+			Type:         Model,
+			Numa:         numa,
+			Mode:         plugin.operatingMode,
+			Health:       health,
+			Architecture: int32(architecture),
 		})
 		klog.Infof("nvml registered device id=%v, memory=%v, type=%v, numa=%v", idx, registeredmem, Model, numa)
 	}
