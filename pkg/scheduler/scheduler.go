@@ -298,6 +298,46 @@ func (s *Scheduler) CleanupGPUBindingsLoop() {
 				}
 				toDelete := make([]string, 0)
 
+				existingApps := make(map[string]struct{})
+				appDiscoveryOK := true
+				if deps, err := s.kubeClient.AppsV1().Deployments(metav1.NamespaceAll).List(context.Background(),
+					metav1.ListOptions{LabelSelector: util.AppNameLabelKey}); err != nil {
+					klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to list Deployments for existing apps")
+					appDiscoveryOK = false
+				} else {
+					for i := range deps.Items {
+						if app := deps.Items[i].Labels[util.AppNameLabelKey]; app != "" {
+							existingApps[app] = struct{}{}
+						}
+					}
+				}
+				if appDiscoveryOK {
+					if ssets, err := s.kubeClient.AppsV1().StatefulSets(metav1.NamespaceAll).List(context.Background(),
+						metav1.ListOptions{LabelSelector: util.AppNameLabelKey}); err != nil {
+						klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to list StatefulSets for existing apps")
+						appDiscoveryOK = false
+					} else {
+						for i := range ssets.Items {
+							if app := ssets.Items[i].Labels[util.AppNameLabelKey]; app != "" {
+								existingApps[app] = struct{}{}
+							}
+						}
+					}
+				}
+				if appDiscoveryOK {
+					if pods, err := s.kubeClient.CoreV1().Pods(metav1.NamespaceAll).List(context.Background(),
+						metav1.ListOptions{LabelSelector: util.AppNameLabelKey}); err != nil {
+						klog.ErrorS(err, "CleanupGPUBindingsLoop: failed to list Pods for existing apps")
+						appDiscoveryOK = false
+					} else {
+						for i := range pods.Items {
+							if app := pods.Items[i].Labels[util.AppNameLabelKey]; app != "" {
+								existingApps[app] = struct{}{}
+							}
+						}
+					}
+				}
+
 				type key struct {
 					app  string
 					uuid string
@@ -307,6 +347,12 @@ func (s *Scheduler) CleanupGPUBindingsLoop() {
 					if _, ok := validUUIDs[b.Spec.UUID]; !ok {
 						toDelete = append(toDelete, b.Name)
 						continue
+					}
+					if appDiscoveryOK {
+						if _, ok := existingApps[b.Spec.AppName]; !ok {
+							toDelete = append(toDelete, b.Name)
+							continue
+						}
 					}
 					k := key{app: b.Spec.AppName, uuid: b.Spec.UUID}
 					group[k] = append(group[k], b)
