@@ -417,17 +417,20 @@ func (plugin *NvidiaDevicePlugin) GetDevicePluginOptions(context.Context, *kubel
 
 // ListAndWatch lists devices and update that list according to the health status
 func (plugin *NvidiaDevicePlugin) ListAndWatch(e *kubeletdevicepluginv1beta1.Empty, s kubeletdevicepluginv1beta1.DevicePlugin_ListAndWatchServer) error {
-	s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
+	_ = s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
+
+	resyncTicker := time.NewTicker(30 * time.Second)
+	defer resyncTicker.Stop()
 
 	for {
 		select {
 		case <-plugin.stop:
 			return nil
 		case d := <-plugin.health:
-			// FIXME: there is no way to recover from the Unhealthy state.
-			d.Health = kubeletdevicepluginv1beta1.Unhealthy
-			klog.Infof("'%s' device marked unhealthy: %s", plugin.rm.Resource(), d.ID)
-			s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
+			klog.Infof("'%s' device health update: %s => %s", plugin.rm.Resource(), d.ID, d.Health)
+			_ = s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
+		case <-resyncTicker.C:
+			_ = s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
 		}
 	}
 }
