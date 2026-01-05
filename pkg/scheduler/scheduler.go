@@ -110,20 +110,30 @@ func (s *Scheduler) onUpdatePod(_, newObj any) {
 }
 
 func (s *Scheduler) onDelPod(obj any) {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		klog.Errorf("unknown add object type")
-		return
-	}
-	_, ok = pod.Annotations[util.AssignedNodeAnnotations]
-	if !ok {
+	var pod *corev1.Pod
+	switch t := obj.(type) {
+	case *corev1.Pod:
+		pod = t
+	case cache.DeletedFinalStateUnknown:
+		// Handle tombstone objects to avoid missing deletes on relist/reconnect
+		if p, ok := t.Obj.(*corev1.Pod); ok {
+			pod = p
+		} else {
+			klog.Errorf("tombstone contained object that is not a Pod: %#v", t.Obj)
+			return
+		}
+	default:
+		klog.Errorf("unknown delete object type: %#v", obj)
 		return
 	}
 	s.delPod(pod)
 
 	// release node lock if this pod owned one on a best-effort basis.
 	// this is safe because ReleaseNodeLock checks the lock owner and no-ops if different.
-	nodeName := pod.Annotations[util.AssignedNodeAnnotations]
+	nodeName := ""
+	if pod.Annotations != nil {
+		nodeName = pod.Annotations[util.AssignedNodeAnnotations]
+	}
 	if nodeName == "" {
 		return
 	}
