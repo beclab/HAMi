@@ -69,6 +69,8 @@ const (
 	deviceListAsVolumeMountsContainerPathRoot = "/var/run/nvidia-container-devices"
 	NodeLockNvidia                            = "hami.io/mutex.lock"
 	ConfigFilePath                            = "/config/config.json"
+	hostVGPULockPath                          = "/run/lock/vgpu"
+	containerVGPULockPath                     = "/tmp/vgpulock"
 )
 
 var (
@@ -552,8 +554,8 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 
 				os.MkdirAll(cacheFileHostDirectory, 0777)
 				os.Chmod(cacheFileHostDirectory, 0777)
-				os.MkdirAll("/tmp/vgpulock", 0777)
-				os.Chmod("/tmp/vgpulock", 0777)
+				os.MkdirAll(hostVGPULockPath, 0777)
+				os.Chmod(hostVGPULockPath, 0777)
 				response.Mounts = append(response.Mounts,
 					&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu/libvgpu.so", hostHookPath),
 						HostPath: GetLibPath(),
@@ -561,8 +563,8 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 					&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu", hostHookPath),
 						HostPath: cacheFileHostDirectory,
 						ReadOnly: false},
-					&kubeletdevicepluginv1beta1.Mount{ContainerPath: "/tmp/vgpulock",
-						HostPath: "/tmp/vgpulock",
+					&kubeletdevicepluginv1beta1.Mount{ContainerPath: containerVGPULockPath,
+						HostPath: hostVGPULockPath,
 						ReadOnly: false},
 				)
 				found := false
