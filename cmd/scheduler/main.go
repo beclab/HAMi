@@ -121,6 +121,7 @@ func start() error {
 	// start monitor metrics
 	go sher.RegisterFromNodeAnnotations()
 	go sher.CleanupGPUBindingsLoop()
+	go sher.CleanupPodsWithMissingDevicesLoop()
 	go initMetrics(config.MetricsBindAddress)
 
 	// start http server
