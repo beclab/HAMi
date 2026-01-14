@@ -55,6 +55,11 @@ const (
 
 	// maxSuccessiveEventErrorCount sets the number of errors waiting for events before marking all devices as unhealthy.
 	maxSuccessiveEventErrorCount = 3
+
+	// xidRecoveryTimeoutCount sets the number of consecutive timeouts (no new XID errors) before
+	// attempting to recover devices marked unhealthy due to XID Critical Errors.
+	// With 5000ms timeout per wait, 6 timeouts = ~30 seconds of stability before recovery.
+	xidRecoveryTimeoutCount = 6
 )
 
 // CheckHealth performs health checks on a set of devices, writing to the 'unhealthy' channel with any unhealthy devices
@@ -157,6 +162,11 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 	// Track devices we marked unhealthy due to NVML event errors to allow recovery
 	errorMarked := make(map[string]bool)
 
+	// Track devices marked unhealthy due to XID Critical Errors to allow recovery
+	xidMarked := make(map[string]bool)
+	// Track consecutive timeouts (no new XID errors) for XID recovery
+	stableTimeoutCount := 0
+
 	for {
 		select {
 		case <-stop:
@@ -181,6 +191,23 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 						unhealthy <- d
 						delete(errorMarked, d.ID)
 					}
+				}
+			}
+
+			// Track consecutive timeouts for XID recovery
+			if len(xidMarked) > 0 {
+				stableTimeoutCount++
+				if stableTimeoutCount >= xidRecoveryTimeoutCount {
+					// Enough time has passed without new XID errors, attempt recovery
+					for _, d := range devices {
+						if xidMarked[d.ID] {
+							klog.Infof("Recovering device %v to healthy after %d stable timeouts (no new XID errors)", d.ID, stableTimeoutCount)
+							d.Health = kubeletdevicepluginv1beta1.Healthy
+							unhealthy <- d
+							delete(xidMarked, d.ID)
+						}
+					}
+					stableTimeoutCount = 0
 				}
 			}
 			continue
@@ -223,7 +250,9 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 			for _, d := range devices {
 				d.Health = kubeletdevicepluginv1beta1.Unhealthy
 				unhealthy <- d
+				xidMarked[d.ID] = true
 			}
+			stableTimeoutCount = 0
 			continue
 		}
 
@@ -250,6 +279,9 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 		klog.Infof("XidCriticalError: Xid=%d on Device=%s; marking device as unhealthy.", e.EventData, d.ID)
 		d.Health = kubeletdevicepluginv1beta1.Unhealthy
 		unhealthy <- d
+		// Track device for potential recovery and reset stability counter
+		xidMarked[d.ID] = true
+		stableTimeoutCount = 0
 	}
 }
 
