@@ -45,6 +45,10 @@ var (
 	// NodeLockTimeout is the timeout for node locks.
 	NodeLockTimeout time.Duration
 
+	// CleanupStartupDelay is the delay before cleanup loops start running after scheduler startup.
+	// This prevents aggressive cleanup during cluster/component start up, when the nvidia-driver has not initialized plugged-in devices.
+	CleanupStartupDelay time.Duration
+
 	// If set to false, When Pod.Spec.SchedulerName equals to the const DefaultSchedulerName in k8s.io/api/core/v1 package, webhook will not overwrite it, default value is true.
 	ForceOverwriteDefaultScheduler bool
 )

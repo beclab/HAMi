@@ -34,6 +34,8 @@ package rm
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 
@@ -44,6 +46,10 @@ import (
 type nvmlResourceManager struct {
 	resourceManager
 	nvml nvml.Interface
+
+	mu             sync.RWMutex
+	lastRescan     time.Time
+	rescanInterval time.Duration
 }
 
 var _ ResourceManager = (*nvmlResourceManager)(nil)
@@ -86,6 +92,7 @@ func NewNVMLResourceManagers(nvmllib nvml.Interface, config *nvidia.DeviceConfig
 			},
 			nvml: nvmllib,
 		}
+		r.rescanInterval = 30 * time.Second
 		rms = append(rms, r)
 	}
 
@@ -114,12 +121,23 @@ func (r *nvmlResourceManager) GetDevicePaths(ids []string) []string {
 	return paths
 }
 
+// Devices returns a snapshot of devices for this resource.
+//
+// It also performs a throttled rescan to detect hot-plug/hot-unplug events.
+// Thread-safety rules:
+// - the internal map is always protected by r.mu
+// - callers get a shallow copy, so external iteration can't race with internal updates
+func (r *nvmlResourceManager) Devices() Devices {
+	r.maybeRescan()
+	return r.devicesSnapshot()
+}
+
 // CheckHealth performs health checks on a set of devices, writing to the 'unhealthy' channel with any unhealthy devices
 func (r *nvmlResourceManager) CheckHealth(stop <-chan any, unhealthy chan<- *Device, disableNVML <-chan bool, ackDisableHealthChecks chan<- bool) error {
 	for {
 		// first check if disableNVML channel signal is pass close into checkHealth function
 		// if signal is pass close, return error "close signal received"
-		err := r.checkHealth(stop, r.devices, unhealthy, disableNVML)
+		err := r.checkHealth(stop, unhealthy, disableNVML)
 		if err.Error() == "close signal received" {
 			ackDisableHealthChecks <- true
 			klog.Info("Check Health has been closed")
@@ -132,4 +150,108 @@ func (r *nvmlResourceManager) CheckHealth(stop <-chan any, unhealthy chan<- *Dev
 		}
 		return err
 	}
+}
+
+func (r *nvmlResourceManager) devicesSnapshot() Devices {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return copyDevicesMap(r.resourceManager.devices)
+}
+
+func copyDevicesMap(in Devices) Devices {
+	out := make(Devices, len(in))
+	for id, dev := range in {
+		out[id] = dev
+	}
+	return out
+}
+
+func (r *nvmlResourceManager) maybeRescan() {
+	// Fast path: check without lock.
+	if r.rescanInterval > 0 && !r.lastRescan.IsZero() && time.Since(r.lastRescan) < r.rescanInterval {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Re-check under lock (double-checked locking).
+	if r.rescanInterval > 0 && !r.lastRescan.IsZero() && time.Since(r.lastRescan) < r.rescanInterval {
+		return
+	}
+
+	if err := r.rescanLocked(); err != nil {
+		// Rescan failures should not break the device plugin; log and keep last known-good devices.
+		klog.ErrorS(err, "Failed to rescan NVML devices; keeping existing device list", "resource", r.resource)
+		return
+	}
+	r.lastRescan = time.Now()
+}
+
+func (r *nvmlResourceManager) rescanLocked() error {
+	ret := r.nvml.Init()
+	if ret != nvml.SUCCESS {
+		if r.config != nil && r.config.Flags.FailOnInitError != nil && *r.config.Flags.FailOnInitError {
+			return fmt.Errorf("failed to initialize NVML for rescan: %v", ret)
+		}
+		return nil
+	}
+	defer func() {
+		ret := r.nvml.Shutdown()
+		if ret != nvml.SUCCESS {
+			klog.Infof("Error shutting down NVML after rescan: %v", ret)
+		}
+	}()
+
+	newDeviceMap, err := NewDeviceMap(r.nvml, r.config)
+	if err != nil {
+		return fmt.Errorf("error building device map during rescan: %v", err)
+	}
+
+	newDevices, exists := newDeviceMap[r.resource]
+	if !exists {
+		newDevices = make(Devices)
+	}
+
+	for key, value := range newDevices {
+		if nvidia.FilterDeviceToRegister(value.ID, value.Index) {
+			klog.V(5).InfoS("Filtering device during rescan", "device", value.ID)
+			delete(newDevices, key)
+		}
+	}
+
+	// Merge: preserve existing *Device pointers to keep Health state.
+	oldDevices := r.resourceManager.devices
+	if oldDevices == nil {
+		oldDevices = make(Devices)
+	}
+
+	// Add/update.
+	for id, newDev := range newDevices {
+		if old, ok := oldDevices[id]; ok && old != nil {
+			// Preserve health, but refresh metadata that may change across rescans.
+			old.Paths = newDev.Paths
+			old.Index = newDev.Index
+			old.Topology = newDev.Topology
+			continue
+		}
+		oldDevices[id] = newDev
+		klog.InfoS("Hot-plug: new device detected", "resource", r.resource, "deviceID", id, "index", newDev.Index)
+	}
+
+	// Remove.
+	for id, old := range oldDevices {
+		if _, ok := newDevices[id]; ok {
+			continue
+		}
+		if old != nil {
+			klog.InfoS("Hot-unplug: device removed", "resource", r.resource, "deviceID", id, "index", old.Index)
+		} else {
+			klog.InfoS("Hot-unplug: device removed", "resource", r.resource, "deviceID", id)
+		}
+		delete(oldDevices, id)
+	}
+
+	r.resourceManager.devices = oldDevices
+	return nil
 }

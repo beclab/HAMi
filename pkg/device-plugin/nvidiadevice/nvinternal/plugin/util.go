@@ -186,6 +186,7 @@ func GetMigUUIDFromIndex(uuid string, idx int) string {
 }
 
 func GetMigGpuInstanceIdFromIndex(uuid string, idx int) (int, error) {
+	defer nvml.Shutdown()
 	if nvret := nvml.Init(); nvret != nvml.SUCCESS {
 		klog.Errorln("nvml Init err: ", nvret)
 		return 0, fmt.Errorf("nvml Init err: %s", nvml.ErrorString(nvret))

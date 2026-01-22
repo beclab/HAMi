@@ -63,7 +63,7 @@ const (
 )
 
 // CheckHealth performs health checks on a set of devices, writing to the 'unhealthy' channel with any unhealthy devices
-func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhealthy chan<- *Device, disableNVML <-chan bool) error {
+func (r *nvmlResourceManager) checkHealth(stop <-chan any, unhealthy chan<- *Device, disableNVML <-chan bool) error {
 	klog.V(4).Info("Check Health start Running")
 	disableHealthChecks := strings.ToLower(os.Getenv(envDisableHealthChecks))
 	if disableHealthChecks == "all" {
@@ -72,20 +72,6 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 	if strings.Contains(disableHealthChecks, "xids") {
 		return nil
 	}
-
-	ret := r.nvml.Init()
-	if ret != nvml.SUCCESS {
-		if *r.config.Flags.FailOnInitError {
-			return fmt.Errorf("failed to initialize NVML: %v", ret)
-		}
-		return nil
-	}
-	defer func() {
-		ret := r.nvml.Shutdown()
-		if ret != nvml.SUCCESS {
-			klog.Infof("Error shutting down NVML: %v", ret)
-		}
-	}()
 
 	// FIXME: formalize the full list and document it.
 	// http://docs.nvidia.com/deploy/xid-errors/index.html#topic_4
@@ -107,55 +93,7 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 		skippedXids[additionalXid] = true
 	}
 
-	eventSet, ret := r.nvml.EventSetCreate()
-	if ret != nvml.SUCCESS {
-		return fmt.Errorf("failed to create event set: %v", ret)
-	}
-	defer eventSet.Free()
-
-	parentToDeviceMap := make(map[string]*Device)
-	deviceIDToGiMap := make(map[string]int)
-	deviceIDToCiMap := make(map[string]int)
-
 	eventMask := uint64(nvml.EventTypeXidCriticalError | nvml.EventTypeDoubleBitEccError | nvml.EventTypeSingleBitEccError)
-	for _, d := range devices {
-		uuid, gi, ci, err := r.getDevicePlacement(d)
-		if err != nil {
-			klog.Warningf("Could not determine device placement for %v: %v; Marking it unhealthy.", d.ID, err)
-			d.Health = kubeletdevicepluginv1beta1.Unhealthy
-			unhealthy <- d
-			continue
-		}
-		deviceIDToGiMap[d.ID] = gi
-		deviceIDToCiMap[d.ID] = ci
-		parentToDeviceMap[uuid] = d
-
-		gpu, ret := r.nvml.DeviceGetHandleByUUID(uuid)
-		if ret != nvml.SUCCESS {
-			klog.Infof("unable to get device handle from UUID: %v; marking it as unhealthy", ret)
-			d.Health = kubeletdevicepluginv1beta1.Unhealthy
-			unhealthy <- d
-			continue
-		}
-
-		supportedEvents, ret := gpu.GetSupportedEventTypes()
-		if ret != nvml.SUCCESS {
-			klog.Infof("Unable to determine the supported events for %v: %v; marking it as unhealthy", d.ID, ret)
-			d.Health = kubeletdevicepluginv1beta1.Unhealthy
-			unhealthy <- d
-			continue
-		}
-
-		ret = gpu.RegisterEvents(eventMask&supportedEvents, eventSet)
-		if ret == nvml.ERROR_NOT_SUPPORTED {
-			klog.Warningf("Device %v is too old to support healthchecking.", d.ID)
-		}
-		if ret != nvml.SUCCESS {
-			klog.Infof("Marking device %v as unhealthy: %v", d.ID, ret)
-			d.Health = kubeletdevicepluginv1beta1.Unhealthy
-			unhealthy <- d
-		}
-	}
 
 	// Track consecutive NVML event errors to avoid flapping
 	successiveEventErrorCount := 0
@@ -167,16 +105,69 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 	// Track consecutive timeouts (no new XID errors) for XID recovery
 	stableTimeoutCount := 0
 
-	for {
-		select {
-		case <-stop:
-			return nil
-		case signal := <-disableNVML:
-			if signal {
-				klog.Info("Check Health has been  received close signal")
-				return fmt.Errorf("close signal received")
+	checkLoop := func() error {
+		ret := r.nvml.Init()
+		if ret != nvml.SUCCESS {
+			if *r.config.Flags.FailOnInitError {
+				return fmt.Errorf("failed to initialize NVML: %v", ret)
 			}
-		default:
+			return nil
+		}
+		defer func() {
+			ret := r.nvml.Shutdown()
+			if ret != nvml.SUCCESS {
+				klog.Infof("Error shutting down NVML: %v", ret)
+			}
+		}()
+
+		eventSet, ret := r.nvml.EventSetCreate()
+		if ret != nvml.SUCCESS {
+			return fmt.Errorf("failed to create event set: %v", ret)
+		}
+		defer eventSet.Free()
+
+		parentToDeviceMap := make(map[string]*Device)
+		deviceIDToGiMap := make(map[string]int)
+		deviceIDToCiMap := make(map[string]int)
+
+		devices := r.devicesSnapshot()
+		for _, d := range devices {
+			uuid, gi, ci, err := r.getDevicePlacement(d)
+			if err != nil {
+				klog.Warningf("Could not determine device placement for %v: %v; Marking it unhealthy.", d.ID, err)
+				d.Health = kubeletdevicepluginv1beta1.Unhealthy
+				unhealthy <- d
+				continue
+			}
+			deviceIDToGiMap[d.ID] = gi
+			deviceIDToCiMap[d.ID] = ci
+			parentToDeviceMap[uuid] = d
+
+			gpu, ret := r.nvml.DeviceGetHandleByUUID(uuid)
+			if ret != nvml.SUCCESS {
+				klog.Infof("unable to get device handle from UUID: %v; marking it as unhealthy", ret)
+				d.Health = kubeletdevicepluginv1beta1.Unhealthy
+				unhealthy <- d
+				continue
+			}
+
+			supportedEvents, ret := gpu.GetSupportedEventTypes()
+			if ret != nvml.SUCCESS {
+				klog.Infof("Unable to determine the supported events for %v: %v; marking it as unhealthy", d.ID, ret)
+				d.Health = kubeletdevicepluginv1beta1.Unhealthy
+				unhealthy <- d
+				continue
+			}
+
+			ret = gpu.RegisterEvents(eventMask&supportedEvents, eventSet)
+			if ret == nvml.ERROR_NOT_SUPPORTED {
+				klog.Warningf("Device %v is too old to support healthchecking.", d.ID)
+			}
+			if ret != nvml.SUCCESS {
+				klog.Infof("Marking device %v as unhealthy: %v", d.ID, ret)
+				d.Health = kubeletdevicepluginv1beta1.Unhealthy
+				unhealthy <- d
+			}
 		}
 
 		e, ret := eventSet.Wait(5000)
@@ -210,7 +201,7 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 					stableTimeoutCount = 0
 				}
 			}
-			continue
+			return nil
 		}
 		if ret != nvml.SUCCESS {
 			successiveEventErrorCount++
@@ -224,7 +215,7 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 					}
 				}
 			}
-			continue
+			return nil
 		}
 		// Successful event received, reset error counter.
 		// Recovery is handled by the timeout branch once NVML wait stabilizes without errors.
@@ -234,12 +225,12 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 
 		if e.EventType != nvml.EventTypeXidCriticalError {
 			klog.Infof("Skipping non-nvmlEventTypeXidCriticalError event: %+v", e)
-			continue
+			return nil
 		}
 
 		if skippedXids[e.EventData] {
 			klog.Infof("Skipping event %+v", e)
-			continue
+			return nil
 		}
 
 		klog.Infof("Processing event %+v", e)
@@ -253,13 +244,13 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 				xidMarked[d.ID] = true
 			}
 			stableTimeoutCount = 0
-			continue
+			return nil
 		}
 
 		d, exists := parentToDeviceMap[eventUUID]
 		if !exists {
 			klog.Infof("Ignoring event for unexpected device: %v", eventUUID)
-			continue
+			return nil
 		}
 
 		if d.IsMigDevice() && e.GpuInstanceId != 0xFFFFFFFF && e.ComputeInstanceId != 0xFFFFFFFF {
@@ -267,11 +258,11 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 			ci := deviceIDToCiMap[d.ID]
 			giu32, err := safecast.ToUint32(gi)
 			if err != nil || giu32 != e.GpuInstanceId {
-				continue
+				return nil
 			}
 			ciu32, err := safecast.ToUint32(ci)
 			if err != nil || ciu32 != e.ComputeInstanceId {
-				continue
+				return nil
 			}
 			klog.Infof("Event for mig device %v (gi=%v, ci=%v)", d.ID, gi, ci)
 		}
@@ -282,6 +273,25 @@ func (r *nvmlResourceManager) checkHealth(stop <-chan any, devices Devices, unhe
 		// Track device for potential recovery and reset stability counter
 		xidMarked[d.ID] = true
 		stableTimeoutCount = 0
+		return nil
+	}
+
+	for {
+		select {
+		case <-stop:
+			return nil
+		case signal := <-disableNVML:
+			if signal {
+				klog.Info("Check Health has been  received close signal")
+				return fmt.Errorf("close signal received")
+			}
+		default:
+			err := checkLoop()
+			if err != nil {
+				return err
+			}
+		}
+
 	}
 }
 
