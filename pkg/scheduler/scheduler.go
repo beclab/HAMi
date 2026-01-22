@@ -280,6 +280,15 @@ func (s *Scheduler) RegisterFromNodeAnnotations() {
 }
 
 func (s *Scheduler) CleanupGPUBindingsLoop() {
+	klog.InfoS("CleanupGPUBindingsLoop: delaying start", "delay", config.CleanupStartupDelay)
+	timer := time.NewTimer(config.CleanupStartupDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.stopCh:
+		return
+	}
+
 	klog.InfoS("Starting CleanupGPUBindingsLoop")
 	defer klog.InfoS("Exiting CleanupGPUBindingsLoop")
 	ticker := time.NewTicker(15 * time.Second)
@@ -400,6 +409,15 @@ func (s *Scheduler) CleanupGPUBindingsLoop() {
 // CleanupPodsWithMissingDevicesLoop periodically cleans up pods that are assigned
 // devices which no longer exist in the cluster.
 func (s *Scheduler) CleanupPodsWithMissingDevicesLoop() {
+	klog.InfoS("CleanupPodsWithMissingDevicesLoop: delaying start", "delay", config.CleanupStartupDelay)
+	timer := time.NewTimer(config.CleanupStartupDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.stopCh:
+		return
+	}
+
 	klog.InfoS("Starting CleanupPodsWithMissingDevicesLoop")
 	defer klog.InfoS("Exiting CleanupPodsWithMissingDevicesLoop")
 	ticker := time.NewTicker(30 * time.Second)
@@ -436,7 +454,7 @@ func (s *Scheduler) CleanupPodsWithMissingDevicesLoop() {
 
 				podsToDelete := make([]*podInfo, 0)
 				for _, pod := range scheduledPods {
-					if pod.Devices == nil || len(pod.Devices) == 0 {
+					if len(pod.Devices) == 0 {
 						continue
 					}
 
