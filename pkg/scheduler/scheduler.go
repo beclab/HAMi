@@ -18,7 +18,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -30,6 +29,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
@@ -662,6 +662,200 @@ func (s *Scheduler) getPodUsage() (map[string]PodUseDeviceStat, error) {
 	return podUsageStat, nil
 }
 
+type nvidiaRequestSummary struct {
+	requested     int
+	hasMemory     bool
+	memoryByte    int64
+	memoryPercent int32
+}
+
+func summarizeNVIDIARequests(resourceReqs util.PodDeviceRequests) nvidiaRequestSummary {
+	sum := nvidiaRequestSummary{}
+	for _, ctrReqs := range resourceReqs {
+		for _, req := range ctrReqs {
+			if req.Type != nvidia.NvidiaGPUDevice || req.Nums <= 0 {
+				continue
+			}
+			sum.requested += int(req.Nums)
+			if req.Memreq > 0 {
+				sum.hasMemory = true
+				// similar to the memory request in pod spec, we only consider the maximum memory request for now
+				// this works with our current assumption that only one container in the pod has a memory request
+				if int64(req.Memreq) > sum.memoryByte {
+					sum.memoryByte = int64(req.Memreq)
+				}
+				continue
+			}
+			if req.MemPercentagereq != 0 && req.MemPercentagereq != 101 {
+				sum.hasMemory = true
+				// use the max percentage across containers for a conservative single-value summary
+				if req.MemPercentagereq > sum.memoryPercent {
+					sum.memoryPercent = req.MemPercentagereq
+				}
+			}
+		}
+	}
+	return sum
+}
+
+func requiredNvidiaMemoryBytes(sum nvidiaRequestSummary, totalMemory int64) int64 {
+	if !sum.hasMemory {
+		return 0
+	}
+	if sum.memoryByte > 0 {
+		return sum.memoryByte
+	}
+	if sum.memoryPercent > 0 && totalMemory > 0 {
+		return totalMemory * int64(sum.memoryPercent) / 100
+	}
+	return 0
+}
+
+func normalizeGPUUUID(uuid string) string {
+	if strings.Contains(uuid, "[") {
+		return strings.Split(uuid, "[")[0]
+	}
+	return uuid
+}
+
+func (s *Scheduler) collectConsumedGPUUUIDsByApp(appName string, currentPod *corev1.Pod) map[string]struct{} {
+	consumed := make(map[string]struct{})
+	for _, p := range s.ListPodsInfo() {
+		if p.Labels == nil || p.Labels[util.AppNameLabelKey] != appName {
+			continue
+		}
+		if currentPod != nil && p.Namespace == currentPod.Namespace && p.Name == currentPod.Name {
+			continue
+		}
+		for _, podDevices := range p.Devices {
+			for _, containerDevices := range podDevices {
+				for _, assigned := range containerDevices {
+					uuid := normalizeGPUUUID(assigned.UUID)
+					if uuid != "" {
+						consumed[uuid] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	return consumed
+}
+
+func (s *Scheduler) selectDynamicGPUCandidates(
+	appBoundUUIDs map[string]struct{},
+	alreadySelected map[string]struct{},
+	consumedByApp map[string]struct{},
+	allBindings []*v1alpha1.GPUBinding,
+	requiredCount int,
+	requestSummary nvidiaRequestSummary,
+) ([]string, error) {
+	if requiredCount <= 0 {
+		return nil, nil
+	}
+	nodes, err := s.ListNodes()
+	if err != nil {
+		return nil, err
+	}
+	uuidToNode := make(map[string]string)
+	for _, n := range nodes {
+		for _, d := range n.Devices {
+			uuidToNode[d.ID] = n.Node.Name
+		}
+	}
+	// todo: needs more flexibility
+	// when we allow an app to be bound to multiple nodes
+	// already consumed GPUs by this app should not be considered as constraints
+	// and not consumed GPUs may be used with or without other candidates
+	// e.g. if an app has 3 GPUs, with 1 consumed, 2 not consumed, it can be bound to any of the 2 not consumed GPUs
+	// with another not bound GPU
+	// or totally other 2 GPUs
+	pinnedNode := ""
+	for uuid := range appBoundUUIDs {
+		if nodeName, ok := uuidToNode[uuid]; ok {
+			pinnedNode = nodeName
+			break
+		}
+	}
+
+	bindingCount := make(map[string]int)
+	bindingAllocatedMemory := make(map[string]int64)
+	for _, b := range allBindings {
+		if b.Spec.UUID == "" {
+			continue
+		}
+		bindingCount[b.Spec.UUID]++
+		if b.Spec.Memory != nil {
+			bindingAllocatedMemory[b.Spec.UUID] += b.Spec.Memory.Value()
+		}
+	}
+
+	memSlicingCandidates := make([]string, 0)
+	exclusiveCandidates := make([]string, 0)
+	timeSlicingCandidates := make([]string, 0)
+
+	for _, n := range nodes {
+		if pinnedNode != "" && n.Node.Name != pinnedNode {
+			continue
+		}
+		for _, d := range n.Devices {
+			uuid := d.ID
+			if uuid == "" || !d.Health {
+				continue
+			}
+			if _, ok := appBoundUUIDs[uuid]; ok {
+				continue
+			}
+			if _, ok := alreadySelected[uuid]; ok {
+				continue
+			}
+			if _, ok := consumedByApp[uuid]; ok {
+				continue
+			}
+
+			switch d.ShareMode {
+			case util.ShareModeMemSlicing:
+				if !requestSummary.hasMemory {
+					continue
+				}
+				requiredMemory := requiredNvidiaMemoryBytes(requestSummary, int64(d.Devmem))
+				remaining := int64(d.Devmem) - bindingAllocatedMemory[uuid]
+				if remaining >= requiredMemory {
+					memSlicingCandidates = append(memSlicingCandidates, uuid)
+				}
+			case util.ShareModeExclusive:
+				if bindingCount[uuid] > 0 {
+					continue
+				}
+				if requestSummary.hasMemory {
+					requiredMemory := requiredNvidiaMemoryBytes(requestSummary, int64(d.Devmem))
+					if int64(d.Devmem) < requiredMemory {
+						continue
+					}
+				}
+				exclusiveCandidates = append(exclusiveCandidates, uuid)
+			case util.ShareModeTimeSlicing:
+				if requestSummary.hasMemory {
+					requiredMemory := requiredNvidiaMemoryBytes(requestSummary, int64(d.Devmem))
+					if int64(d.Devmem) < requiredMemory {
+						continue
+					}
+				}
+				timeSlicingCandidates = append(timeSlicingCandidates, uuid)
+			}
+		}
+	}
+
+	result := make([]string, 0)
+	if requestSummary.hasMemory && len(memSlicingCandidates) > 0 {
+		result = append(result, memSlicingCandidates...)
+	} else if len(exclusiveCandidates) > 0 {
+		result = append(result, exclusiveCandidates...)
+	} else {
+		result = append(result, timeSlicingCandidates...)
+	}
+	return result, nil
+}
+
 func (s *Scheduler) Bind(args extenderv1.ExtenderBindingArgs) (*extenderv1.ExtenderBindingResult, error) {
 	klog.InfoS("Attempting to bind pod to node", "pod", args.PodName, "namespace", args.PodNamespace, "node", args.Node)
 	var res *extenderv1.ExtenderBindingResult
@@ -749,35 +943,131 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	if annos == nil {
 		annos = make(map[string]string)
 	}
-	appName := args.Pod.Labels[util.AppNameLabelKey]
-	hasBindings := false
-	if appName != "" {
-		bindings, err := s.ListGPUBindings()
+	appName := ""
+	if args.Pod.Labels != nil {
+		appName = args.Pod.Labels[util.AppNameLabelKey]
+	}
+	if appName == "" {
+		err := fmt.Errorf("cannot schedule pod without %s label", util.AppNameLabelKey)
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		failedNodes := make(map[string]string)
+		if args.NodeNames != nil {
+			for _, nodeName := range *args.NodeNames {
+				failedNodes[nodeName] = "pod has no owner application"
+			}
+		}
+		return &extenderv1.ExtenderFilterResult{
+			FailedNodes: failedNodes,
+		}, nil
+	}
+
+	bindings, err := s.ListGPUBindings()
+	if err != nil {
+		klog.ErrorS(err, "Failed to list GPUBindings for Filter", "pod", klog.KObj(args.Pod))
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		return nil, err
+	}
+
+	appBoundByUUID := make(map[string]*v1alpha1.GPUBinding)
+	appBoundUUIDs := make(map[string]struct{})
+	matchedBindings := make([]*v1alpha1.GPUBinding, 0)
+	for _, b := range bindings {
+		if b.Spec.AppName != appName || b.Spec.UUID == "" {
+			continue
+		}
+		appBoundUUIDs[b.Spec.UUID] = struct{}{}
+		if _, ok := appBoundByUUID[b.Spec.UUID]; !ok {
+			appBoundByUUID[b.Spec.UUID] = b
+		}
+		// todo: maybe we can remove this check, because the pod selector currently only matches the app name
+		if !b.MatchPod(args.Pod) {
+			continue
+		}
+		matchedBindings = append(matchedBindings, b)
+		// todo: currently this will conflict if the pod has multiple containers, or requires multiple GPUs with different memory requests in bindings
+		if b.Spec.Memory != nil {
+			annos[fmt.Sprintf(nvidia.AppGPUMemAnnotationTpl, b.Spec.UUID)] = b.Spec.Memory.String()
+		}
+	}
+
+	policyMode := ""
+	if args.Pod.Labels != nil {
+		policyMode = args.Pod.Labels[nvidia.AppPodGPUConsumePolicyKey]
+	}
+	consumedByApp := s.collectConsumedGPUUUIDsByApp(appName, args.Pod)
+	if policyMode == "" || policyMode == nvidia.AppPodGPUConsumePolicyAll {
+		if len(matchedBindings) > 0 {
+			for _, b := range matchedBindings {
+				if _, occupied := consumedByApp[b.Spec.UUID]; occupied {
+					err := fmt.Errorf("bound GPU %s of app %s is already consumed by another pod", b.Spec.UUID, appName)
+					s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+					return &extenderv1.ExtenderFilterResult{
+						FailedNodes: map[string]string{},
+					}, nil
+				}
+			}
+			for ctrIdx := range resourceReqs {
+				for reqIdx, req := range resourceReqs[ctrIdx] {
+					if req.Type != nvidia.NvidiaGPUDevice || req.Nums <= 0 {
+						continue
+					}
+					// this assumes only one container in the pod has a gpu request
+					req.Nums = int32(len(matchedBindings))
+					resourceReqs[ctrIdx][reqIdx] = req
+				}
+			}
+		}
+	}
+
+	nvidiaSummary := summarizeNVIDIARequests(resourceReqs)
+	selectedUUIDs := make([]string, 0)
+	selectedUUIDSet := make(map[string]struct{})
+	appendSelectedUUID := func(uuid string) {
+		if uuid == "" {
+			return
+		}
+		if _, ok := selectedUUIDSet[uuid]; ok {
+			return
+		}
+		selectedUUIDSet[uuid] = struct{}{}
+		selectedUUIDs = append(selectedUUIDs, uuid)
+	}
+
+	for _, b := range matchedBindings {
+		if _, occupied := consumedByApp[b.Spec.UUID]; occupied {
+			continue
+		}
+		appendSelectedUUID(b.Spec.UUID)
+	}
+
+	if nvidiaSummary.requested > 0 && len(selectedUUIDs) < nvidiaSummary.requested {
+		dynamicCandidates, err := s.selectDynamicGPUCandidates(
+			appBoundUUIDs,
+			selectedUUIDSet,
+			consumedByApp,
+			bindings,
+			nvidiaSummary.requested-len(selectedUUIDs),
+			nvidiaSummary,
+		)
 		if err != nil {
-			klog.ErrorS(err, "Failed to list GPUBindings for Filter", "pod", klog.KObj(args.Pod))
 			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
 			return nil, err
 		}
-		var uuids []string
-		for _, b := range bindings {
-			if b.Spec.AppName != appName {
-				continue
-			}
-			if !b.MatchPod(args.Pod) {
-				continue
-			}
-			hasBindings = true
-			uuids = append(uuids, b.Spec.UUID)
-			if b.Spec.Memory != nil {
-				annos[fmt.Sprintf(nvidia.AppGPUMemAnnotationTpl, b.Spec.UUID)] = b.Spec.Memory.String()
-			}
+		for _, uuid := range dynamicCandidates {
+			appendSelectedUUID(uuid)
 		}
-		if len(uuids) > 0 {
-			annos[nvidia.GPUUseUUID] = strings.Join(uuids, ",")
-		} else {
-			// Ensure the hint is empty if nothing matches
-			annos[nvidia.GPUUseUUID] = ""
-		}
+	}
+	if nvidiaSummary.requested > 0 && len(selectedUUIDs) < nvidiaSummary.requested {
+		err := fmt.Errorf("insufficient GPU candidates for app %s, requested=%d, available=%d", appName, nvidiaSummary.requested, len(selectedUUIDs))
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		return &extenderv1.ExtenderFilterResult{
+			FailedNodes: map[string]string{},
+		}, nil
+	}
+	if len(selectedUUIDs) > 0 {
+		annos[nvidia.GPUUseUUID] = strings.Join(selectedUUIDs, ",")
+	} else {
+		annos[nvidia.GPUUseUUID] = ""
 	}
 	s.delPod(args.Pod)
 	nodeUsage, failedNodes, err := s.getNodesUsage(args.NodeNames, args.Pod)
@@ -808,49 +1098,82 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	m := (*nodeScores).NodeList[len((*nodeScores).NodeList)-1]
 
 	devlist, ok := m.Devices[nvidia.NvidiaGPUDevice]
-	if ok && len(devlist) > 0 && !hasBindings {
-		appName := args.Pod.Labels[util.AppNameLabelKey]
-		if appName == "" {
-			klog.V(4).InfoS("Cannot find the owner Application to create GPUBinding automatically",
-				"pod", args.Pod.Name)
-			err := errors.New("Cannot find the owner Application to create GPUBinding automatically")
+	if ok && len(devlist) > 0 {
+		nodeInfo, err := s.GetNode(m.NodeID)
+		if err != nil {
 			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
 			return nil, err
 		}
-		var uuid string
+		shareModeByUUID := make(map[string]string)
+		for _, d := range nodeInfo.Devices {
+			shareModeByUUID[d.ID] = d.ShareMode
+		}
+
+		allocatedUUIDs := make(map[string]struct{})
 		for _, cdev := range devlist {
 			for _, dev := range cdev {
-				if dev.ShareMode == util.ShareModeTimeSlicing && dev.UUID != "" {
-					uuid = dev.UUID
+				uuid := normalizeGPUUUID(dev.UUID)
+				if uuid == "" {
+					continue
 				}
+				allocatedUUIDs[uuid] = struct{}{}
 			}
 		}
-		if uuid == "" {
-			klog.V(4).InfoS("Cannot find a GPU UUID to create GPUBinding automatically",
-				"pod", args.Pod.Name)
-			err := errors.New("Cannot find a GPU UUID to create GPUBinding automatically")
-			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
-			return nil, err
+		bindingAllocatedMemory := make(map[string]int64)
+		for _, b := range bindings {
+			if b.Spec.UUID == "" || b.Spec.Memory == nil {
+				continue
+			}
+			bindingAllocatedMemory[b.Spec.UUID] += b.Spec.Memory.Value()
 		}
-		autoBinding := &v1alpha1.GPUBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: strings.ToLower(fmt.Sprintf("%s-%s-%d", appName, uuid, time.Now().Unix())),
-			},
-			Spec: v1alpha1.GPUBindingSpec{
-				UUID:    uuid,
-				AppName: appName,
-				PodSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						util.AppNameLabelKey: appName,
+		deviceTotalMemByUUID := make(map[string]int64)
+		for _, d := range nodeInfo.Devices {
+			deviceTotalMemByUUID[d.ID] = int64(d.Devmem)
+		}
+		for uuid := range allocatedUUIDs {
+			if _, exists := appBoundByUUID[uuid]; exists {
+				continue
+			}
+			autoBinding := &v1alpha1.GPUBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: strings.ToLower(fmt.Sprintf("%s-%s-%d", appName, uuid, time.Now().Unix())),
+				},
+				Spec: v1alpha1.GPUBindingSpec{
+					UUID:    uuid,
+					AppName: appName,
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							util.AppNameLabelKey: appName,
+						},
 					},
 				},
-			},
-		}
-		err := s.CreateGPUBinding(context.Background(), autoBinding)
-		if err != nil {
-			klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name)
-			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
-			return nil, err
+			}
+			if shareModeByUUID[uuid] == util.ShareModeMemSlicing {
+				totalMem := deviceTotalMemByUUID[uuid]
+				requiredMem := requiredNvidiaMemoryBytes(nvidiaSummary, totalMem)
+				if requiredMem <= 0 {
+					err := fmt.Errorf("invalid mem-slicing GPU memory request for binding on %s: request=%d", uuid, requiredMem)
+					klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name, "uuid", uuid)
+					s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+					return nil, err
+				}
+				if totalMem > 0 && bindingAllocatedMemory[uuid]+requiredMem > totalMem {
+					err := fmt.Errorf("insufficient mem-slicing GPU memory for binding on %s: allocated=%d, request=%d, total=%d", uuid, bindingAllocatedMemory[uuid], requiredMem, totalMem)
+					klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name, "uuid", uuid)
+					s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+					return nil, err
+				}
+				memQ := resource.NewQuantity(requiredMem, resource.BinarySI)
+				autoBinding.Spec.Memory = memQ
+				bindingAllocatedMemory[uuid] += requiredMem
+			}
+			err := s.CreateGPUBinding(context.Background(), autoBinding)
+			if err != nil {
+				klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name, "uuid", uuid)
+				s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+				return nil, err
+			}
+			appBoundByUUID[uuid] = autoBinding
 		}
 	}
 

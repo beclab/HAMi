@@ -130,7 +130,7 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 			panic(0)
 		}
 		memoryTotal := 0
-		memory, ret := ndev.GetMemoryInfo()
+		memory, ret := util.GetCompatibleNVMLMemoryInfo(ndev)
 		if ret == nvml.SUCCESS {
 			memoryTotal = int(memory.Total)
 		} else {
@@ -141,6 +141,11 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 		if ret != nvml.SUCCESS {
 			klog.Error("nvml get name error ret=", ret)
 			panic(0)
+		}
+		defaultShareMode := util.ShareModeTimeSlicing
+		config, ok := util.GetCompatibleConfigsByDeviceName(Model)
+		if ok && config.DefaultShareMode != "" {
+			defaultShareMode = config.DefaultShareMode
 		}
 		if !strings.Contains(Model, "NVIDIA") {
 			Model = fmt.Sprintf("%v-%v", "NVIDIA", Model)
@@ -184,6 +189,7 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*util.DeviceInfo {
 			Mode:         plugin.operatingMode,
 			Health:       health,
 			Architecture: int32(architecture),
+			ShareMode:    defaultShareMode,
 		})
 		klog.Infof("nvml registered device id=%v, memory=%v, type=%v, numa=%v", idx, registeredmem, Model, numa)
 	}
@@ -216,6 +222,20 @@ func (plugin *NvidiaDevicePlugin) RegistrInAnnotation() error {
 	klog.V(4).InfoS("patch nvidia  topo score to node", "hami.io/node-nvidia-score", string(data))
 	annos[nvidia.HandshakeAnnos] = "Reported " + time.Now().String()
 	annos[nvidia.RegisterAnnos] = encodeddevices
+
+	// Ensure each discovered device has a sharemode annotation key present.
+	// Do NOT override an existing value potentially set by scheduler/API handlers.
+	// If missing, default to time-slicing.
+	for _, dev := range *devices {
+		shareModeKey := fmt.Sprintf(util.ShareModeAnnotationTpl, dev.ID)
+		if node.Annotations != nil {
+			if _, ok := node.Annotations[shareModeKey]; ok {
+				continue
+			}
+		}
+		annos[shareModeKey] = dev.ShareMode
+	}
+
 	if len(data) > 0 {
 		annos[nvidia.RegisterGPUPairScore] = string(data)
 	}

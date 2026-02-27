@@ -25,7 +25,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/Project-HAMi/HAMi/pkg/device"
-	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/policy"
 	"github.com/Project-HAMi/HAMi/pkg/util"
@@ -119,84 +118,6 @@ func fitInDevices(node *NodeUsage, requests util.ContainerDeviceRequests, annos 
 }
 
 func (s *Scheduler) calcScore(nodes *map[string]*NodeUsage, resourceReqs util.PodDeviceRequests, annos map[string]string, task *corev1.Pod, failedNodes map[string]string) (*policy.NodeScoreList, error) {
-	appName := ""
-	if task.Labels != nil {
-		appName = task.Labels[util.AppNameLabelKey]
-	}
-
-	if appName != "" {
-		policyMode := task.Labels[nvidia.AppPodGPUConsumePolicyKey]
-		boundCSV := annos[nvidia.GPUUseUUID]
-		boundSet := map[string]struct{}{}
-		if boundCSV != "" {
-			for _, u := range strings.Split(boundCSV, ",") {
-				u = strings.TrimSpace(u)
-				if u != "" {
-					boundSet[u] = struct{}{}
-				}
-			}
-		}
-		// compute consumed UUIDs by live pods of the same app (in scheduler memory)
-		consumed := map[string]struct{}{}
-		for _, p := range s.ListPodsInfo() {
-			if p.Labels == nil || p.Labels[util.AppNameLabelKey] != appName {
-				continue
-			}
-			for _, pdev := range p.Devices {
-				for _, cdevs := range pdev {
-					for _, cdev := range cdevs {
-						uuid := cdev.UUID
-						if strings.Contains(uuid, "[") {
-							uuid = strings.Split(uuid, "[")[0]
-						}
-						if uuid != "" {
-							consumed[uuid] = struct{}{}
-						}
-					}
-				}
-			}
-		}
-
-		if policyMode == "" || policyMode == nvidia.AppPodGPUConsumePolicyAll {
-			if len(consumed) > 0 {
-				empty := policy.NodeScoreList{Policy: config.NodeSchedulerPolicy, NodeList: []*policy.NodeScore{}}
-				return &empty, nil
-			}
-			if len(boundSet) > 0 {
-				for ctrIdx := range resourceReqs {
-					for key, req := range resourceReqs[ctrIdx] {
-						if req.Type == nvidia.NvidiaGPUDevice {
-							req.Nums = int32(len(boundSet))
-							resourceReqs[ctrIdx][key] = req
-						}
-					}
-				}
-			}
-		} else if policyMode == nvidia.AppPodGPUConsumePolicySingle {
-			// allow only unconsumed bound UUIDs by filter out those already consumed by other pods of the same app
-			if len(boundSet) > 0 {
-				pruned := make([]string, 0, len(boundSet))
-				for u := range boundSet {
-					if _, ok := consumed[u]; !ok {
-						pruned = append(pruned, u)
-					}
-				}
-				if len(pruned) == 0 {
-					empty := policy.NodeScoreList{Policy: config.NodeSchedulerPolicy, NodeList: []*policy.NodeScore{}}
-					return &empty, nil
-				}
-				annos[nvidia.GPUUseUUID] = strings.Join(pruned, ",")
-			}
-			for ctrIdx := range resourceReqs {
-				for key, req := range resourceReqs[ctrIdx] {
-					if req.Type == nvidia.NvidiaGPUDevice && req.Nums != 1 {
-						req.Nums = 1
-						resourceReqs[ctrIdx][key] = req
-					}
-				}
-			}
-		}
-	}
 	userNodePolicy := config.NodeSchedulerPolicy
 	if annos != nil {
 		if value, ok := annos[policy.NodeSchedulerPolicyAnnotationKey]; ok {
