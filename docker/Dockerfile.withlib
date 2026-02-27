@@ -15,6 +15,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=utility
 
 ARG VERSION
+ARG TARGETARCH
 LABEL version="$VERSION"
 LABEL maintainer="opensource@4paradigm.com"
 COPY ./LICENSE /k8s-vgpu/LICENSE
@@ -22,6 +23,12 @@ COPY --from=gobuild /k8s-vgpu/bin /k8s-vgpu/bin
 COPY --from=gobuild /go/bin/nvidia-mig-parted /k8s-vgpu/bin/
 COPY ./docker/entrypoint.sh /k8s-vgpu/bin/entrypoint.sh
 COPY ./lib /k8s-vgpu/lib
+RUN set -eux; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+      mv -f /k8s-vgpu/lib/nvidia/libvgpu.arm64.so /k8s-vgpu/lib/nvidia/libvgpu.so; \
+    else \
+      rm -f /k8s-vgpu/lib/nvidia/libvgpu.arm64.so; \
+    fi
 COPY ./docker/vgpu-init.sh /k8s-vgpu/bin/vgpu-init.sh
 
 ENV PATH="/k8s-vgpu/bin:${PATH}"

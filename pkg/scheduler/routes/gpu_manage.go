@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -34,9 +35,10 @@ type GPUAppInfo struct {
 
 type GPUDetail struct {
 	GPUInfo
-	Apps            []GPUAppInfo `json:"apps"`
-	MemoryAllocated *int64       `json:"memoryAllocated,omitempty"`
-	MemoryAvailable *int64       `json:"memoryAvailable,omitempty"`
+	AllowedShareModes []string     `json:"allowedShareModes,omitempty"`
+	Apps              []GPUAppInfo `json:"apps"`
+	MemoryAllocated   *int64       `json:"memoryAllocated,omitempty"`
+	MemoryAvailable   *int64       `json:"memoryAvailable,omitempty"`
 }
 
 type AssignGPURequest struct {
@@ -111,11 +113,17 @@ func ListGPUDetails(s *scheduler.Scheduler) httprouter.Handle {
 
 		for _, node := range nodes {
 			for _, device := range node.Devices {
+				allowedShareModes := util.DefaultAllowedShareModes
+				config, ok := util.GetCompatibleConfigsByDeviceName(device.Type)
+				if ok && len(config.AllowedShareModes) > 0 {
+					allowedShareModes = config.AllowedShareModes
+				}
 				uuidToGPUDetails[device.ID] = &GPUDetail{
 					GPUInfo: GPUInfo{
 						NodeName:   node.Node.Name,
 						DeviceInfo: device,
 					},
+					AllowedShareModes: allowedShareModes,
 				}
 			}
 		}
@@ -426,6 +434,14 @@ func SwitchGPUMode(s *scheduler.Scheduler) httprouter.Handle {
 		for _, node := range nodes {
 			for _, device := range node.Devices {
 				if device.ID == uuid {
+					config, ok := util.GetCompatibleConfigsByDeviceName(device.Type)
+					if ok && len(config.AllowedShareModes) > 0 {
+						if !slices.Contains(config.AllowedShareModes, req.Mode) {
+							klog.Warningf("GPU %s does not support mode %s, refusing to switch", uuid, req.Mode)
+							http.Error(w, fmt.Sprintf("GPU %s does not support mode %s", uuid, req.Mode), http.StatusBadRequest)
+							return
+						}
+					}
 					targetNode = node.Node
 					break
 				}

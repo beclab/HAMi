@@ -55,7 +55,8 @@ const (
 )
 
 var (
-	DebugMode bool
+	DefaultAllowedShareModes = []string{ShareModeTimeSlicing, ShareModeMemSlicing, ShareModeExclusive}
+	DebugMode                bool
 
 	NodeName          string
 	RuntimeSocketFlag string
@@ -69,7 +70,7 @@ type ContainerDevice struct {
 	Usedmem    int32
 	Usedcores  int32
 	CustomInfo map[string]any
-	ShareMode string
+	ShareMode  string
 }
 
 type ContainerDeviceRequest struct {
@@ -134,20 +135,20 @@ type DeviceUsage struct {
 }
 
 type DeviceInfo struct {
-	ID           string         `json:"id,omitempty"`
-	Index        uint           `json:"index,omitempty"`
-	Count        int32          `json:"count,omitempty"`
-	Devmem       int32          `json:"devmem,omitempty"`
-	Devcore      int32          `json:"devcore,omitempty"`
-	Type         string         `json:"type,omitempty"`
-	Numa         int            `json:"numa,omitempty"`
-	Mode         string         `json:"mode,omitempty"`
-	Architecture int32          `json:"architecture,omitempty"`
-	MIGTemplate  []Geometry     `json:"migtemplate,omitempty"`
-	Health       bool           `json:"health,omitempty"`
-	DeviceVendor string         `json:"devicevendor,omitempty"`
-	CustomInfo   map[string]any `json:"custominfo,omitempty"`
-	ShareMode    string     `json:"sharemode,omitempty"`
+	ID              string          `json:"id,omitempty"`
+	Index           uint            `json:"index,omitempty"`
+	Count           int32           `json:"count,omitempty"`
+	Devmem          int32           `json:"devmem,omitempty"`
+	Devcore         int32           `json:"devcore,omitempty"`
+	Type            string          `json:"type,omitempty"`
+	Numa            int             `json:"numa,omitempty"`
+	Mode            string          `json:"mode,omitempty"`
+	Architecture    int32           `json:"architecture,omitempty"`
+	MIGTemplate     []Geometry      `json:"migtemplate,omitempty"`
+	Health          bool            `json:"health,omitempty"`
+	DeviceVendor    string          `json:"devicevendor,omitempty"`
+	CustomInfo      map[string]any  `json:"custominfo,omitempty"`
+	ShareMode       string          `json:"sharemode,omitempty"`
 	DevicePairScore DevicePairScore `json:"devicepairscore,omitempty"`
 }
 

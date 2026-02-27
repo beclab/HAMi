@@ -260,7 +260,7 @@ func (cc ClusterManagerCollector) collectGPUDeviceMetrics(ch chan<- prometheus.M
 }
 
 func (cc ClusterManagerCollector) collectGPUMemoryMetrics(ch chan<- prometheus.Metric, hdev nvml.Device, index int) error {
-	memory, ret := hdev.GetMemoryInfo()
+	memory, ret := util.GetCompatibleNVMLMemoryInfo(hdev)
 	if ret != nvml.SUCCESS {
 		return fmt.Errorf("nvml get memory error ret=%d", ret)
 	}
