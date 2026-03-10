@@ -742,6 +742,9 @@ func (s *Scheduler) collectConsumedGPUUUIDsByApp(appName string, currentPod *cor
 }
 
 func (s *Scheduler) selectDynamicGPUCandidates(
+	nodes map[string]*util.NodeInfo,
+	eligibleNodes map[string]struct{},
+	uuidToNode map[string]string,
 	appBoundUUIDs map[string]struct{},
 	alreadySelected map[string]struct{},
 	consumedByApp map[string]struct{},
@@ -751,16 +754,6 @@ func (s *Scheduler) selectDynamicGPUCandidates(
 ) ([]string, error) {
 	if requiredCount <= 0 {
 		return nil, nil
-	}
-	nodes, err := s.ListNodes()
-	if err != nil {
-		return nil, err
-	}
-	uuidToNode := make(map[string]string)
-	for _, n := range nodes {
-		for _, d := range n.Devices {
-			uuidToNode[d.ID] = n.Node.Name
-		}
 	}
 	// todo: needs more flexibility
 	// when we allow an app to be bound to multiple nodes
@@ -772,6 +765,9 @@ func (s *Scheduler) selectDynamicGPUCandidates(
 	pinnedNode := ""
 	for uuid := range appBoundUUIDs {
 		if nodeName, ok := uuidToNode[uuid]; ok {
+			if _, eligible := eligibleNodes[nodeName]; !eligible {
+				continue
+			}
 			pinnedNode = nodeName
 			break
 		}
@@ -794,6 +790,9 @@ func (s *Scheduler) selectDynamicGPUCandidates(
 	timeSlicingCandidates := make([]string, 0)
 
 	for _, n := range nodes {
+		if _, eligible := eligibleNodes[n.Node.Name]; !eligible {
+			continue
+		}
 		if pinnedNode != "" && n.Node.Name != pinnedNode {
 			continue
 		}
@@ -961,11 +960,30 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		}, nil
 	}
 
+	eligibleNodes := make(map[string]struct{})
+	if args.NodeNames != nil {
+		for _, nodeName := range *args.NodeNames {
+			eligibleNodes[nodeName] = struct{}{}
+		}
+	}
+
 	bindings, err := s.ListGPUBindings()
 	if err != nil {
 		klog.ErrorS(err, "Failed to list GPUBindings for Filter", "pod", klog.KObj(args.Pod))
 		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
 		return nil, err
+	}
+	nodes, err := s.ListNodes()
+	if err != nil {
+		klog.ErrorS(err, "Failed to list nodes for Filter", "pod", klog.KObj(args.Pod))
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		return nil, err
+	}
+	uuidToNode := make(map[string]string)
+	for _, node := range nodes {
+		for _, dev := range node.Devices {
+			uuidToNode[dev.ID] = node.Node.Name
+		}
 	}
 
 	appBoundByUUID := make(map[string]*v1alpha1.GPUBinding)
@@ -975,12 +993,35 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		if b.Spec.AppName != appName || b.Spec.UUID == "" {
 			continue
 		}
+		matchedPod := b.MatchPod(args.Pod)
+		// todo: restrict binding operation on specific nodes
+		// bindingNode, ok := uuidToNode[b.Spec.UUID]
+		// if !ok {
+		// 	if matchedPod {
+		// 		err := fmt.Errorf("GPU binding %s references unknown GPU %s for pod %s/%s", b.Name, b.Spec.UUID, args.Pod.Namespace, args.Pod.Name)
+		// 		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		// 		return &extenderv1.ExtenderFilterResult{
+		// 			FailedNodes: map[string]string{},
+		// 		}, nil
+		// 	}
+		// 	continue
+		// }
+		// if _, eligible := eligibleNodes[bindingNode]; !eligible {
+		// 	if matchedPod {
+		// 		err := fmt.Errorf("GPU binding %s (uuid=%s) targets node %s, which conflicts with scheduler filtered nodes for pod %s/%s", b.Name, b.Spec.UUID, bindingNode, args.Pod.Namespace, args.Pod.Name)
+		// 		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		// 		return &extenderv1.ExtenderFilterResult{
+		// 			FailedNodes: map[string]string{},
+		// 		}, nil
+		// 	}
+		// 	continue
+		// }
 		appBoundUUIDs[b.Spec.UUID] = struct{}{}
 		if _, ok := appBoundByUUID[b.Spec.UUID]; !ok {
 			appBoundByUUID[b.Spec.UUID] = b
 		}
 		// todo: maybe we can remove this check, because the pod selector currently only matches the app name
-		if !b.MatchPod(args.Pod) {
+		if !matchedPod {
 			continue
 		}
 		matchedBindings = append(matchedBindings, b)
@@ -1042,6 +1083,9 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 
 	if nvidiaSummary.requested > 0 && len(selectedUUIDs) < nvidiaSummary.requested {
 		dynamicCandidates, err := s.selectDynamicGPUCandidates(
+			nodes,
+			eligibleNodes,
+			uuidToNode,
 			appBoundUUIDs,
 			selectedUUIDSet,
 			consumedByApp,
