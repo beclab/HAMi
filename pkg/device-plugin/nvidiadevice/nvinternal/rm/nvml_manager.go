@@ -93,6 +93,7 @@ func NewNVMLResourceManagers(nvmllib nvml.Interface, config *nvidia.DeviceConfig
 			nvml: nvmllib,
 		}
 		r.rescanInterval = 30 * time.Second
+		r.lastRescan = time.Now()
 		rms = append(rms, r)
 	}
 

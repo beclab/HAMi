@@ -328,7 +328,8 @@ func startPlugins(c *cli.Context, flags []cli.Flag, restarting bool) ([]plugin.I
 	}
 
 	if started == 0 {
-		klog.Info("No devices found. Waiting indefinitely.")
+		klog.Info("No devices found. Retrying in 30s...")
+		return plugins, true, nil
 	}
 
 	return plugins, false, nil
