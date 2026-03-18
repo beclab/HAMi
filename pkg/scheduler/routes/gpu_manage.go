@@ -294,10 +294,8 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 						for _, cdev := range cdevs {
 							if cdev.UUID == uuid {
 								klog.Infof("Forcing out pod %s/%s of exclusive GPU %s in favor of %s", pod.Namespace, pod.Name, uuid, req.AppName)
-								err = ctrlclient.IgnoreNotFound(client.GetClient().CoreV1().Pods(pod.Namespace).Delete(r.Context(), pod.Name, metav1.DeleteOptions{}))
+								err = s.DeletePodFromCluster(r.Context(), s.PodInfoToPodObj(pod))
 								if err != nil {
-									err = fmt.Errorf("failed to delete existing pod occupying GPU %s/%s: %v", pod.Namespace, pod.Name, err)
-									klog.Errorln(err)
 									http.Error(w, err.Error(), http.StatusInternalServerError)
 									return
 								}
@@ -362,10 +360,8 @@ func AssignGPUToApp(s *scheduler.Scheduler) httprouter.Handle {
 		}
 
 		// delete existing pods for this app
-		err = ctrlclient.IgnoreNotFound(util.DeletePodsBelongToApp(r.Context(), req.AppName))
+		err = s.DeletePodsBelongToApp(r.Context(), req.AppName)
 		if err != nil {
-			err = fmt.Errorf("failed to delete existing pods of app %s: %v", req.AppName, err)
-			klog.Errorln(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -464,10 +460,8 @@ func SwitchGPUMode(s *scheduler.Scheduler) httprouter.Handle {
 					for _, cdev := range cdevs {
 						if cdev.UUID == uuid {
 							klog.Infof("Deleting pod %s/%s for mode switch of GPU %s", pod.Namespace, pod.Name, uuid)
-							err = ctrlclient.IgnoreNotFound(client.GetClient().CoreV1().Pods(pod.Namespace).Delete(r.Context(), pod.Name, metav1.DeleteOptions{}))
+							err = s.DeletePodFromCluster(r.Context(), s.PodInfoToPodObj(pod))
 							if err != nil {
-								err = fmt.Errorf("failed to delete existing pod occupying GPU %s/%s: %v", pod.Namespace, pod.Name, err)
-								klog.Errorln(err)
 								http.Error(w, err.Error(), http.StatusInternalServerError)
 								return
 							}
@@ -555,7 +549,7 @@ func UnassignGPUFromApp(s *scheduler.Scheduler) httprouter.Handle {
 			return
 		}
 
-		if err := ctrlclient.IgnoreNotFound(util.DeletePodsBelongToApp(r.Context(), req.AppName)); err != nil {
+		if err := ctrlclient.IgnoreNotFound(s.DeletePodsBelongToApp(r.Context(), req.AppName)); err != nil {
 			klog.Errorln(fmt.Errorf("failed to delete pods of app %s: %v", req.AppName, err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -812,9 +806,7 @@ func BulkManageAssignments(s *scheduler.Scheduler) httprouter.Handle {
 						for _, cdev := range cdevs {
 							if _, needEvict := evictUUIDs[cdev.UUID]; needEvict {
 								klog.Infof("Evicting pod %s/%s occupying exclusive GPU %s", pod.Namespace, pod.Name, cdev.UUID)
-								if err := ctrlclient.IgnoreNotFound(client.GetClient().CoreV1().Pods(pod.Namespace).Delete(r.Context(), pod.Name, metav1.DeleteOptions{})); err != nil {
-									err = fmt.Errorf("failed to delete existing pod occupying GPU %s/%s: %v", pod.Namespace, pod.Name, err)
-									klog.Errorln(err)
+								if err := s.DeletePodFromCluster(r.Context(), s.PodInfoToPodObj(pod)); err != nil {
 									http.Error(w, err.Error(), http.StatusInternalServerError)
 									return
 								}
@@ -834,9 +826,7 @@ func BulkManageAssignments(s *scheduler.Scheduler) httprouter.Handle {
 		}
 
 		// 2) Restart this app's pods due to binding changes
-		if err := ctrlclient.IgnoreNotFound(util.DeletePodsBelongToApp(r.Context(), req.AppName)); err != nil {
-			err = fmt.Errorf("failed to delete existing pods of app %s: %v", req.AppName, err)
-			klog.Errorln(err)
+		if err := s.DeletePodsBelongToApp(r.Context(), req.AppName); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

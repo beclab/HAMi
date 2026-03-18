@@ -98,7 +98,7 @@ func (s *Scheduler) onAddPod(obj any) {
 	if !ok {
 		return
 	}
-	if k8sutil.IsPodInTerminatedState(pod) {
+	if k8sutil.IsPodInTerminatedState(pod) || pod.DeletionTimestamp != nil {
 		s.delPod(pod)
 		return
 	}
@@ -139,20 +139,48 @@ func (s *Scheduler) onDelPod(obj any) {
 		return
 	}
 	p := pod.DeepCopy()
-	go func(nodeName string, p *corev1.Pod) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		node, err := s.kubeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	node, err := s.kubeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		klog.Error("Skip releasing node lock: failed to get node", "node", nodeName, "pod", klog.KObj(p), "err", err)
+		return
+	}
+	for _, dev := range device.GetDevices() {
+		if err := dev.ReleaseNodeLock(node, p); err != nil {
+			klog.Error("ReleaseNodeLock returned error", "node", nodeName, "pod", klog.KObj(p), "err", err)
+		}
+	}
+}
+
+func (s *Scheduler) DeletePodFromCluster(ctx context.Context, pod *corev1.Pod) error {
+	if pod == nil {
+		return nil
+	}
+	err := ctrlclient.IgnoreNotFound(s.kubeClient.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}))
+	if err != nil {
+		err = fmt.Errorf("failed to delete pod %s: %v", pod.Name, err)
+		klog.Errorln(err)
+		return err
+	}
+	s.onDelPod(pod)
+	return nil
+}
+
+func (s *Scheduler) DeletePodsBelongToApp(ctx context.Context, appName string) error {
+	pods, err := s.kubeClient.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", util.AppNameLabelKey, appName)})
+	if err != nil {
+		err = fmt.Errorf("failed to list pods belonging to app %s: %v", appName, err)
+		klog.Errorln(err)
+		return err
+	}
+	for _, pod := range pods.Items {
+		err := s.DeletePodFromCluster(ctx, &pod)
 		if err != nil {
-			klog.Error("Skip releasing node lock: failed to get node", "node", nodeName, "pod", klog.KObj(p), "err", err)
-			return
+			return err
 		}
-		for _, dev := range device.GetDevices() {
-			if err := dev.ReleaseNodeLock(node, p); err != nil {
-				klog.Error("ReleaseNodeLock returned error", "node", nodeName, "pod", klog.KObj(p), "err", err)
-			}
-		}
-	}(nodeName, p)
+	}
+	return nil
 }
 
 func (s *Scheduler) Start() {

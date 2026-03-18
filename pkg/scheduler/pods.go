@@ -140,6 +140,17 @@ func (m *podManager) ListPodsInfo() []*podInfo {
 	return pods
 }
 
+func (m *podManager) PodInfoToPodObj(pod *podInfo) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   pod.Namespace,
+			Name:        pod.Name,
+			UID:         pod.UID,
+			Annotations: map[string]string{util.AssignedNodeAnnotations: pod.NodeID},
+		},
+	}
+}
+
 func (m *podManager) GetScheduledPods() (map[k8stypes.UID]*podInfo, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
