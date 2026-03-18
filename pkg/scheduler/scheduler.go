@@ -1069,7 +1069,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 			for _, b := range matchedBindings {
 				if _, occupied := consumedByApp[b.Spec.UUID]; occupied {
 					err := fmt.Errorf("bound GPU %s of app %s is already consumed by another pod", b.Spec.UUID, appName)
-					s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+					s.recordScheduleFilterResultEvent(args.Pod, EventReasonInsufficientGPU, "", err)
 					return &extenderv1.ExtenderFilterResult{
 						FailedNodes: map[string]string{},
 					}, nil
@@ -1131,7 +1131,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	}
 	if nvidiaSummary.requested > 0 && len(selectedUUIDs) < nvidiaSummary.requested {
 		err := fmt.Errorf("insufficient GPU candidates for app %s, requested=%d, available=%d", appName, nvidiaSummary.requested, len(selectedUUIDs))
-		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonInsufficientGPU, "", err)
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: map[string]string{},
 		}, nil
@@ -1160,7 +1160,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	if len((*nodeScores).NodeList) == 0 {
 		klog.V(4).InfoS("No available nodes meet the required scores",
 			"pod", args.Pod.Name)
-		s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", fmt.Errorf("no available node, %d nodes do not meet", len(*args.NodeNames)))
+		s.recordScheduleFilterResultEvent(args.Pod, EventReasonInsufficientGPU, "", fmt.Errorf("no available GPU resources on all %d nodes", len(*args.NodeNames)))
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: failedNodes,
 		}, nil
@@ -1232,7 +1232,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 				if totalMem > 0 && bindingAllocatedMemory[uuid]+requiredMem > totalMem {
 					err := fmt.Errorf("insufficient mem-slicing GPU memory for binding on %s: allocated=%d, request=%d, total=%d", uuid, bindingAllocatedMemory[uuid], requiredMem, totalMem)
 					klog.ErrorS(err, "Failed to create GPUBinding automatically", "pod", args.Pod.Name, "uuid", uuid)
-					s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+					s.recordScheduleFilterResultEvent(args.Pod, EventReasonInsufficientGPU, "", err)
 					return nil, err
 				}
 				memQ := resource.NewQuantity(requiredMem, resource.BinarySI)
