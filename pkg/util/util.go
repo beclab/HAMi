@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/Project-HAMi/HAMi/pkg/api/gpu/v1alpha1"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	"github.com/Project-HAMi/HAMi/pkg/util/nodelock"
@@ -421,23 +420,6 @@ func PatchPodAnnotations(pod *corev1.Pod, annotations map[string]string) error {
 		klog.Infof("patch pod %v failed, %v", pod.Name, err)
 	}
 	return err
-}
-
-func DeletePodsBelongToApp(ctx context.Context, appName string) error {
-	if appName == "" {
-		return errors.New("appName is empty")
-	}
-	pods, err := client.GetClient().CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", AppNameLabelKey, appName)})
-	if err != nil {
-		return fmt.Errorf("failed to list pods belonging to app %s: %v", appName, err)
-	}
-	for _, pod := range pods.Items {
-		err := ctrlclient.IgnoreNotFound(client.GetClient().CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}))
-		if err != nil {
-			return fmt.Errorf("failed to delete pod %s: %v", pod.Name, err)
-		}
-	}
-	return nil
 }
 
 func DeleteGPUBinding(ctx context.Context, name string) error {

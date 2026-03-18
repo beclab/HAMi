@@ -31,6 +31,8 @@ import (
 
 // Define events for ResourceBinding, ResourceFilter objects and their associated resources.
 const (
+	// EventReasonInsufficientGPU indicates that insufficient GPU resources are available.
+	EventReasonInsufficientGPU = "InsufficientGPU"
 	// EventReasonFilteringFailed indicates that filtering failed.
 	EventReasonFilteringFailed = "FilteringFailed"
 	// EventReasonFilteringSucceed indicates that filtering succeed.
