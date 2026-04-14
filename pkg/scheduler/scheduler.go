@@ -300,6 +300,18 @@ func (s *Scheduler) RegisterFromNodeAnnotations() {
 				}
 			}
 		}
+		activeNodes := make(map[string]struct{}, len(nodeNames))
+		for _, name := range nodeNames {
+			activeNodes[name] = struct{}{}
+		}
+		allRegistered, _ := s.ListNodes()
+		for id := range allRegistered {
+			if _, exists := activeNodes[id]; !exists {
+				klog.InfoS("Removing stale node from scheduler", "nodeName", id)
+				s.removeNode(id)
+			}
+		}
+
 		_, _, err = s.getNodesUsage(&nodeNames, nil)
 		if err != nil {
 			klog.ErrorS(err, "Failed to get node usage", "nodeNames", nodeNames)

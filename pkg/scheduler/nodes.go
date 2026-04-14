@@ -100,6 +100,12 @@ func (m *nodeManager) rmNodeDevices(nodeID string, deviceVendor string) {
 	klog.InfoS("Removing device from node", "nodeName", nodeID, "deviceVendor", deviceVendor, "remainingDevices", devices)
 }
 
+func (m *nodeManager) removeNode(nodeID string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	delete(m.nodes, nodeID)
+}
+
 func (m *nodeManager) GetNode(nodeID string) (*util.NodeInfo, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
