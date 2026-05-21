@@ -24,6 +24,8 @@ import (
 type GPUBindingSpec struct {
 	UUID        string                `json:"uuid"`
 	AppName     string                `json:"appName"`
+	Owner       string                `json:"owner,omitempty"`
+	Namespace   string                `json:"namespace,omitempty"`
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 	Memory      *resource.Quantity    `json:"memory,omitempty"`
 }

@@ -75,7 +75,7 @@ func init() {
 	rootCmd.Flags().IntVar(&config.Timeout, "kube-timeout", client.DefaultTimeout, "Timeout to use while talking with kube-apiserver.")
 	rootCmd.Flags().BoolVar(&enableProfiling, "profiling", false, "Enable pprof profiling via HTTP server")
 	rootCmd.Flags().DurationVar(&config.NodeLockTimeout, "node-lock-timeout", time.Minute*5, "timeout for node locks")
-	rootCmd.Flags().DurationVar(&config.CleanupStartupDelay, "cleanup-startup-delay", 90*time.Second, "delay before starting cleanup loops (CleanupGPUBindingsLoop/CleanupPodsWithMissingDevicesLoop)")
+	rootCmd.Flags().DurationVar(&config.CleanupStartupDelay, "cleanup-startup-delay", 90*time.Second, "delay before starting cleanup loops (CleanupPodsWithMissingDevicesLoop)")
 	rootCmd.Flags().BoolVar(&config.ForceOverwriteDefaultScheduler, "force-overwrite-default-scheduler", true, "Overwrite schedulerName in Pod Spec when set to the const DefaultSchedulerName in https://k8s.io/api/core/v1 package")
 
 	rootCmd.PersistentFlags().AddGoFlagSet(device.GlobalFlagSet())
@@ -121,7 +121,6 @@ func start() error {
 
 	// start monitor metrics
 	go sher.RegisterFromNodeAnnotations()
-	go sher.CleanupGPUBindingsLoop()
 	go sher.CleanupPodsWithMissingDevicesLoop()
 	go initMetrics(config.MetricsBindAddress)
 
@@ -131,12 +130,6 @@ func start() error {
 	router.POST("/bind", routes.Bind(sher))
 	router.POST("/webhook", routes.WebHookRoute())
 	router.GET("/healthz", routes.HealthzRoute())
-
-	router.GET("/gpus", routes.ListGPUDetails(sher))
-	router.PUT("/gpus/assignments/bulk", routes.BulkManageAssignments(sher))
-	router.POST("/gpus/:id/mode", routes.SwitchGPUMode(sher))
-	router.POST("/gpus/:id/assign", routes.AssignGPUToApp(sher))
-	router.POST("/gpus/:id/unassign", routes.UnassignGPUFromApp(sher))
 
 	klog.Info("listen on ", config.HTTPBind)
 
