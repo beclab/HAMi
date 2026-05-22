@@ -109,6 +109,20 @@ type NvidiaDevicePlugin struct {
 	stop   chan any
 }
 
+func shouldInjectHamiCore(devices util.ContainerDevices) bool {
+	if len(devices) == 0 {
+		return false
+	}
+
+	for _, device := range devices {
+		if device.ShareMode != util.ShareModeExclusive {
+			return true
+		}
+	}
+
+	return false
+}
+
 func readFromConfigFile(sConfig *nvidia.NvidiaConfig, path string) (string, error) {
 	jsonbyte, err := os.ReadFile(path)
 	mode := "hami-core"
@@ -526,6 +540,7 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 			}
 
 			if plugin.operatingMode != "mig" {
+				injectHamiCore := shouldInjectHamiCore(devreq)
 				for i, dev := range devreq {
 					limitKey := fmt.Sprintf("CUDA_DEVICE_MEMORY_LIMIT_%v", i)
 					response.Envs[limitKey] = fmt.Sprintf("%vm", dev.Usedmem)
@@ -537,67 +552,69 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 					response.Envs[realMemKey] = fmt.Sprintf("%vm", nodeNvidiaDevices[i].Devmem)
 				}
 
-				response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.os-gpu:6000"
-				response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
-				response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
-				if plugin.schedulerConfig.DeviceMemoryScaling != nil && *plugin.schedulerConfig.DeviceMemoryScaling > 1 {
-					response.Envs["CUDA_OVERSUBSCRIBE"] = "true"
-				}
-				if plugin.schedulerConfig.LogLevel != nil && *plugin.schedulerConfig.LogLevel != "" {
-					response.Envs["LIBCUDA_LOG_LEVEL"] = string(*plugin.schedulerConfig.LogLevel)
-				}
-				if plugin.schedulerConfig.DisableCoreLimit {
-					response.Envs[util.CoreLimitSwitch] = "disable"
-				}
-				cacheFileHostDirectory := fmt.Sprintf("%s/vgpu/containers/%s_%s", hostHookPath, current.UID, currentCtr.Name)
-				os.RemoveAll(cacheFileHostDirectory)
-
-				os.MkdirAll(cacheFileHostDirectory, 0777)
-				os.Chmod(cacheFileHostDirectory, 0777)
-				os.MkdirAll(hostVGPULockPath, 0777)
-				os.Chmod(hostVGPULockPath, 0777)
-				response.Mounts = append(response.Mounts,
-					&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu/libvgpu.so", hostHookPath),
-						HostPath: GetLibPath(),
-						ReadOnly: true},
-					&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu", hostHookPath),
-						HostPath: cacheFileHostDirectory,
-						ReadOnly: false},
-					&kubeletdevicepluginv1beta1.Mount{ContainerPath: containerVGPULockPath,
-						HostPath: hostVGPULockPath,
-						ReadOnly: false},
-				)
-				found := false
-				for _, val := range currentCtr.Env {
-					if strings.Compare(val.Name, "CUDA_DISABLE_CONTROL") == 0 {
-						// if env existed but is set to false or can not be parsed, ignore
-						t, _ := strconv.ParseBool(val.Value)
-						if !t {
-							continue
-						}
-						// only env existed and set to true, we mark it "found"
-						found = true
-						break
+				if injectHamiCore {
+					response.Envs["SCHEDULER_WEBSOCKET_URL"] = "ws://gpu-scheduler.os-gpu:6000"
+					response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
+					response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
+					if plugin.schedulerConfig.DeviceMemoryScaling != nil && *plugin.schedulerConfig.DeviceMemoryScaling > 1 {
+						response.Envs["CUDA_OVERSUBSCRIBE"] = "true"
 					}
-				}
-				if !found {
-					response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{ContainerPath: "/etc/ld.so.preload",
-						HostPath: hostHookPath + "/vgpu/ld.so.preload",
-						ReadOnly: true},
+					if plugin.schedulerConfig.LogLevel != nil && *plugin.schedulerConfig.LogLevel != "" {
+						response.Envs["LIBCUDA_LOG_LEVEL"] = string(*plugin.schedulerConfig.LogLevel)
+					}
+					if plugin.schedulerConfig.DisableCoreLimit {
+						response.Envs[util.CoreLimitSwitch] = "disable"
+					}
+					cacheFileHostDirectory := fmt.Sprintf("%s/vgpu/containers/%s_%s", hostHookPath, current.UID, currentCtr.Name)
+					os.RemoveAll(cacheFileHostDirectory)
+
+					os.MkdirAll(cacheFileHostDirectory, 0777)
+					os.Chmod(cacheFileHostDirectory, 0777)
+					os.MkdirAll(hostVGPULockPath, 0777)
+					os.Chmod(hostVGPULockPath, 0777)
+					response.Mounts = append(response.Mounts,
+						&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu/libvgpu.so", hostHookPath),
+							HostPath: GetLibPath(),
+							ReadOnly: true},
+						&kubeletdevicepluginv1beta1.Mount{ContainerPath: fmt.Sprintf("%s/vgpu", hostHookPath),
+							HostPath: cacheFileHostDirectory,
+							ReadOnly: false},
+						&kubeletdevicepluginv1beta1.Mount{ContainerPath: containerVGPULockPath,
+							HostPath: hostVGPULockPath,
+							ReadOnly: false},
 					)
-				}
-				_, err = os.Stat(fmt.Sprintf("%s/vgpu/license", hostHookPath))
-				if err == nil {
-					response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{
-						ContainerPath: "/tmp/license",
-						HostPath:      fmt.Sprintf("%s/vgpu/license", hostHookPath),
-						ReadOnly:      true,
-					})
-					response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{
-						ContainerPath: "/usr/bin/vgpuvalidator",
-						HostPath:      fmt.Sprintf("%s/vgpu/vgpuvalidator", hostHookPath),
-						ReadOnly:      true,
-					})
+					found := false
+					for _, val := range currentCtr.Env {
+						if strings.Compare(val.Name, "CUDA_DISABLE_CONTROL") == 0 {
+							// if env existed but is set to false or can not be parsed, ignore
+							t, _ := strconv.ParseBool(val.Value)
+							if !t {
+								continue
+							}
+							// only env existed and set to true, we mark it "found"
+							found = true
+							break
+						}
+					}
+					if !found {
+						response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{ContainerPath: "/etc/ld.so.preload",
+							HostPath: hostHookPath + "/vgpu/ld.so.preload",
+							ReadOnly: true},
+						)
+					}
+					_, err = os.Stat(fmt.Sprintf("%s/vgpu/license", hostHookPath))
+					if err == nil {
+						response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{
+							ContainerPath: "/tmp/license",
+							HostPath:      fmt.Sprintf("%s/vgpu/license", hostHookPath),
+							ReadOnly:      true,
+						})
+						response.Mounts = append(response.Mounts, &kubeletdevicepluginv1beta1.Mount{
+							ContainerPath: "/usr/bin/vgpuvalidator",
+							HostPath:      fmt.Sprintf("%s/vgpu/vgpuvalidator", hostHookPath),
+							ReadOnly:      true,
+						})
+					}
 				}
 			}
 			responses.ContainerResponses = append(responses.ContainerResponses, response)
