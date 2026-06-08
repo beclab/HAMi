@@ -261,6 +261,13 @@ func (s *Scheduler) RegisterFromNodeAnnotations() {
 					s.rmNodeDevices(val.Name, devhandsk)
 					continue
 				}
+
+				for _, nodedevice := range nodedevices {
+					if err := s.UpdateDeviceShareMode(nodedevice.ID, nodedevice.ShareMode); err != nil {
+						klog.V(5).InfoS("Skipping share mode sync, device not registered yet", "nodeName", val.Name, "deviceID", nodedevice.ID)
+					}
+				}
+
 				if !needUpdate {
 					klog.V(5).InfoS("No update needed for device", "nodeName", val.Name, "deviceVendor", devhandsk)
 					continue

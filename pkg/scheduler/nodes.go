@@ -125,9 +125,9 @@ func (m *nodeManager) UpdateDeviceShareMode(uuid, mode string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	for _, node := range m.nodes {
-		for _, dev := range node.Devices {
-			if dev.ID == uuid {
-				dev.ShareMode = mode
+		for i := range node.Devices {
+			if node.Devices[i].ID == uuid {
+				node.Devices[i].ShareMode = mode
 				return nil
 			}
 		}
