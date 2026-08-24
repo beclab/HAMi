@@ -127,15 +127,23 @@ func TestEmptyPodDeviceCoding(t *testing.T) {
 	assert.DeepEqual(t, pd1, pd2)
 }
 
+// TestPodDevicesCoding checks the encode/decode roundtrip. want differs from
+// args by one trailing empty ContainerDevices: the encoder terminates every
+// container segment with OnePodMultiContainerSplitSymbol, and the decoder keeps
+// empty segments so that index i stays aligned with pod.Spec.Containers[i].
 func TestPodDevicesCoding(t *testing.T) {
 	tests := []struct {
 		name string
 		args PodDevices
+		want PodDevices
 	}{
 		{
 			name: "one pod one container use zero device",
 			args: PodDevices{
 				"NVIDIA": PodSingleDevice{},
+			},
+			want: PodDevices{
+				"NVIDIA": PodSingleDevice{ContainerDevices{}},
 			},
 		},
 		{
@@ -143,8 +151,16 @@ func TestPodDevicesCoding(t *testing.T) {
 			args: PodDevices{
 				"NVIDIA": PodSingleDevice{
 					ContainerDevices{
-						ContainerDevice{0, "UUID1", "Type1", 1000, 30, nil},
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
 					},
+				},
+			},
+			want: PodDevices{
+				"NVIDIA": PodSingleDevice{
+					ContainerDevices{
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+					},
+					ContainerDevices{},
 				},
 			},
 		},
@@ -153,11 +169,22 @@ func TestPodDevicesCoding(t *testing.T) {
 			args: PodDevices{
 				"NVIDIA": PodSingleDevice{
 					ContainerDevices{
-						ContainerDevice{0, "UUID1", "Type1", 1000, 30, nil},
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
 					},
 					ContainerDevices{
-						ContainerDevice{0, "UUID1", "Type1", 1000, 30, nil},
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
 					},
+				},
+			},
+			want: PodDevices{
+				"NVIDIA": PodSingleDevice{
+					ContainerDevices{
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+					},
+					ContainerDevices{
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+					},
+					ContainerDevices{},
 				},
 			},
 		},
@@ -166,9 +193,18 @@ func TestPodDevicesCoding(t *testing.T) {
 			args: PodDevices{
 				"NVIDIA": PodSingleDevice{
 					ContainerDevices{
-						ContainerDevice{0, "UUID1", "Type1", 1000, 30, nil},
-						ContainerDevice{0, "UUID2", "Type1", 1000, 30, nil},
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+						ContainerDevice{Idx: 0, UUID: "UUID2", Type: "Type1", Usedmem: 1000, Usedcores: 30},
 					},
+				},
+			},
+			want: PodDevices{
+				"NVIDIA": PodSingleDevice{
+					ContainerDevices{
+						ContainerDevice{Idx: 0, UUID: "UUID1", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+						ContainerDevice{Idx: 0, UUID: "UUID2", Type: "Type1", Usedmem: 1000, Usedcores: 30},
+					},
+					ContainerDevices{},
 				},
 			},
 		},
@@ -178,8 +214,39 @@ func TestPodDevicesCoding(t *testing.T) {
 			s := EncodePodDevices(inRequestDevices, test.args)
 			fmt.Println(s)
 			got, _ := DecodePodDevices(inRequestDevices, s)
-			assert.DeepEqual(t, test.args, got)
+			assert.DeepEqual(t, test.want, got)
 		})
+	}
+}
+
+// TestDecodePodDevicesPreservesContainerIndex is the regression guard for the
+// sidecar case: a pod whose GPU container is not the first container. Dropping
+// the empty leading segment used to shift the GPU entry to index 0, which made
+// the device plugin resolve the sidecar as the GPU container and name the
+// libvgpu cache directory after it, so per-container GPU metrics were reported
+// under the sidecar and never matched the real workload.
+func TestDecodePodDevicesPreservesContainerIndex(t *testing.T) {
+	InRequestDevices["NVIDIA"] = "hami.io/vgpu-devices-to-allocate"
+	gpu := ContainerDevice{UUID: "GPU-be013ee7", Type: "NVIDIA", Usedmem: 0, Usedcores: 0, ShareMode: "2"}
+
+	// Three containers: [0] sidecar, [1] GPU workload, [2] sidecar.
+	annos := map[string]string{
+		"hami.io/vgpu-devices-to-allocate": ";GPU-be013ee7,NVIDIA,0,0,2:;;",
+	}
+	got, err := DecodePodDevices(InRequestDevices, annos)
+	if err != nil {
+		t.Fatalf("DecodePodDevices: %v", err)
+	}
+	pd := got["NVIDIA"]
+	if len(pd) < 3 {
+		t.Fatalf("decoded %d entries, want at least 3 so index 2 stays addressable: %+v", len(pd), pd)
+	}
+	if len(pd[0]) != 0 {
+		t.Errorf("index 0 (sidecar) = %+v, want empty", pd[0])
+	}
+	assert.DeepEqual(t, ContainerDevices{gpu}, pd[1])
+	if len(pd[2]) != 0 {
+		t.Errorf("index 2 (sidecar) = %+v, want empty", pd[2])
 	}
 }
 
@@ -216,8 +283,8 @@ func Test_DecodePodDevices(t *testing.T) {
 			}{
 				checklist: InRequestDevices,
 				annos: map[string]string{
-					InRequestDevices["NVIDIA"]: "GPU-8dcd427f-483b-b48f-d7e5-75fb19a52b76,NVIDIA,500,3:;GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,NVIDIA,500,3:;",
-					SupportDevices["NVIDIA"]:   "GPU-8dcd427f-483b-b48f-d7e5-75fb19a52b76,NVIDIA,500,3:;GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,NVIDIA,500,3:;",
+					InRequestDevices["NVIDIA"]: "GPU-8dcd427f-483b-b48f-d7e5-75fb19a52b76,NVIDIA,500,3,0:;GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,NVIDIA,500,3,0:;",
+					SupportDevices["NVIDIA"]:   "GPU-8dcd427f-483b-b48f-d7e5-75fb19a52b76,NVIDIA,500,3,0:;GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,NVIDIA,500,3,0:;",
 				},
 			},
 			want: PodDevices{
@@ -228,6 +295,7 @@ func Test_DecodePodDevices(t *testing.T) {
 							Type:      "NVIDIA",
 							Usedmem:   500,
 							Usedcores: 3,
+							ShareMode: "0",
 						},
 					},
 					{
@@ -236,8 +304,10 @@ func Test_DecodePodDevices(t *testing.T) {
 							Type:      "NVIDIA",
 							Usedmem:   500,
 							Usedcores: 3,
+							ShareMode: "0",
 						},
 					},
+					{},
 				},
 			},
 			wantErr: nil,
@@ -505,7 +575,7 @@ func Test_EncodeNodeDevices(t *testing.T) {
 					Health:  true,
 				},
 			},
-			want: "GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,10,7680,100,NVIDIA-Tesla P4,0,true,0,hami-core:",
+			want: "GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,10,7680,100,NVIDIA-Tesla P4,0,true,0,hami-core,0:",
 		},
 		{
 			name: "test two",
@@ -522,7 +592,7 @@ func Test_EncodeNodeDevices(t *testing.T) {
 					Health:  true,
 				},
 			},
-			want: "GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,10,7680,100,NVIDIA-Tesla P4,0,true,1,hami-core:",
+			want: "GPU-ebe7c3f7-303d-558d-435e-99a160631fe4,10,7680,100,NVIDIA-Tesla P4,0,true,1,hami-core,0:",
 		},
 	}
 
