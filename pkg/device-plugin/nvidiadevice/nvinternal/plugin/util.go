@@ -56,10 +56,18 @@ func GetNextDeviceRequest(dtype string, p corev1.Pod) (corev1.Container, util.Co
 	if !ok {
 		return corev1.Container{}, res, errors.New("device request not found")
 	}
+	// pd is indexed by pod.Spec.Containers position, and carries one extra
+	// trailing entry from the encoder's trailing separator.
 	for ctridx, ctrDevice := range pd {
-		if len(ctrDevice) > 0 {
-			return p.Spec.Containers[ctridx], ctrDevice, nil
+		if len(ctrDevice) == 0 {
+			continue
 		}
+		if ctridx >= len(p.Spec.Containers) {
+			klog.Errorf("device request at index %d exceeds container count %d for pod %s/%s", ctridx, len(p.Spec.Containers), p.Namespace, p.Name)
+			break
+		}
+		klog.Infof("found device request for container %s at index %d of pod %s/%s", p.Spec.Containers[ctridx].Name, ctridx, p.Namespace, p.Name)
+		return p.Spec.Containers[ctridx], ctrDevice, nil
 	}
 	return corev1.Container{}, res, errors.New("device request not found")
 }

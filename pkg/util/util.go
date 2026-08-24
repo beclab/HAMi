@@ -356,9 +356,13 @@ func DecodePodDevices(checklist map[string]string, annos map[string]string) (Pod
 			if err != nil {
 				return PodDevices{}, nil
 			}
-			if len(cd) == 0 {
-				continue
-			}
+			// Empty entries must be kept: position i in the decoded slice is
+			// position i in pod.Spec.Containers, and containers without devices
+			// encode as empty segments. Dropping them shifts every later
+			// container down, so callers that resolve a container by index
+			// (GetNextDeviceRequest, the vGPUmonitor MIG collector) would read
+			// the wrong container. The trailing separator produces one extra
+			// empty entry beyond the container count; callers must bounds-check.
 			pd[devID] = append(pd[devID], cd)
 		}
 	}

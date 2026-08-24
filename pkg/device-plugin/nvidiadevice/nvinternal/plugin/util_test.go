@@ -19,6 +19,9 @@ package plugin
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"github.com/Project-HAMi/HAMi/pkg/util"
 )
@@ -150,6 +153,86 @@ func TestGenerateMigTemplate(t *testing.T) {
 				if !ok || actual != v {
 					t.Errorf("expected %s count %d, got %d", k, v, actual)
 				}
+			}
+		})
+	}
+}
+
+// TestGetNextDeviceRequestContainerIndex covers the Olares pod shape, where a
+// service-mesh sidecar is injected ahead of the workload. The device plugin
+// names the libvgpu shared-cache directory after the container this returns, so
+// picking the sidecar silently files every per-container GPU metric under the
+// wrong container name.
+func TestGetNextDeviceRequestContainerIndex(t *testing.T) {
+	util.InRequestDevices[nvidia.NvidiaGPUDevice] = "hami.io/vgpu-devices-to-allocate"
+
+	tests := []struct {
+		name       string
+		containers []string
+		anno       string
+		wantCtr    string
+		wantErr    bool
+	}{
+		{
+			name:       "gpu container first",
+			containers: []string{"llamacpp", "olares-mesh-in-agent"},
+			anno:       "GPU-be013ee7,NVIDIA,0,0,2:;;",
+			wantCtr:    "llamacpp",
+		},
+		{
+			name:       "gpu container behind an injected sidecar",
+			containers: []string{"linkerd-proxy", "llamacpp", "olares-mesh-in-agent"},
+			anno:       ";GPU-be013ee7,NVIDIA,0,0,2:;;",
+			wantCtr:    "llamacpp",
+		},
+		{
+			name:       "gpu container last",
+			containers: []string{"linkerd-proxy", "olares-mesh-in-agent", "llamacpp"},
+			anno:       ";;GPU-be013ee7,NVIDIA,0,0,2:;",
+			wantCtr:    "llamacpp",
+		},
+		{
+			name:       "no container requests a device",
+			containers: []string{"linkerd-proxy", "llamacpp"},
+			anno:       ";;",
+			wantErr:    true,
+		},
+		{
+			name:       "more device entries than containers is rejected, not a panic",
+			containers: []string{"linkerd-proxy"},
+			anno:       ";GPU-be013ee7,NVIDIA,0,0,2:;",
+			wantErr:    true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "pod",
+					Namespace:   "ns",
+					Annotations: map[string]string{"hami.io/vgpu-devices-to-allocate": test.anno},
+				},
+			}
+			for _, name := range test.containers {
+				pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: name})
+			}
+
+			ctr, devs, err := GetNextDeviceRequest(nvidia.NvidiaGPUDevice, pod)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("got container %q, want an error", ctr.Name)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetNextDeviceRequest: %v", err)
+			}
+			if ctr.Name != test.wantCtr {
+				t.Errorf("container = %q, want %q", ctr.Name, test.wantCtr)
+			}
+			if len(devs) != 1 || devs[0].UUID != "GPU-be013ee7" {
+				t.Errorf("devices = %+v, want the single GPU-be013ee7 entry", devs)
 			}
 		})
 	}
