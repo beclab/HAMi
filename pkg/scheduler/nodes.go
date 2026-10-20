@@ -55,11 +55,12 @@ func (m *nodeManager) addNode(nodeID string, nodeInfo *util.NodeInfo) {
 	if ok {
 		if len(nodeInfo.Devices) > 0 {
 			tmp := make([]util.DeviceInfo, 0, len(nodeInfo.Devices))
-			devices := device.GetDevices()
+			// Match on the vendor key, as getNodeResources does: common words
+			// are too generic (NVIDIA's is "GPU", which Intel model names contain).
 			deviceType := ""
-			for _, val := range devices {
-				if strings.Contains(nodeInfo.Devices[0].Type, val.CommonWord()) {
-					deviceType = val.CommonWord()
+			for vendor := range device.GetDevices() {
+				if strings.Contains(nodeInfo.Devices[0].Type, vendor) && len(vendor) > len(deviceType) {
+					deviceType = vendor
 				}
 			}
 			for _, val := range m.nodes[nodeID].Devices {
