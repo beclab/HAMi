@@ -341,6 +341,14 @@ devices:
     enabled: true
     customresources:
       - kunlunxin.com/xpu
+  intel:
+    enabled: true
+    # MiB booked per container on top of its memory quota; a pod overrides it
+    # with the gpu.bytetrade.io/vxpu-memory-reserve annotation.
+    memoryReserve: 256
+    customresources:
+      - intel.com/vgpu
+      - intel.com/vgpumem
   enflame:
     enabled: true
     customresources:

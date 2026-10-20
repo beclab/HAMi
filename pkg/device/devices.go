@@ -31,6 +31,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/device/enflame"
 	"github.com/Project-HAMi/HAMi/pkg/device/hygon"
 	"github.com/Project-HAMi/HAMi/pkg/device/iluvatar"
+	"github.com/Project-HAMi/HAMi/pkg/device/intel"
 	"github.com/Project-HAMi/HAMi/pkg/device/metax"
 	"github.com/Project-HAMi/HAMi/pkg/device/mthreads"
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
@@ -70,6 +71,7 @@ type Config struct {
 	IluvatarConfig  iluvatar.IluvatarConfig   `yaml:"iluvatar"`
 	EnflameConfig   enflame.EnflameConfig     `yaml:"enflame"`
 	KunlunConfig    kunlun.KunlunConfig       `yaml:"kunlun"`
+	IntelConfig     intel.IntelConfig         `yaml:"intel"`
 	VNPUs           []ascend.VNPUConfig       `yaml:"vnpus"`
 }
 
@@ -182,6 +184,13 @@ func InitDevicesWithConfig(config *Config) error {
 			}
 			return kunlun.InitKunlunDevice(kunlunConfig), nil
 		}, config.KunlunConfig},
+		{intel.IntelGPUDevice, intel.IntelGPUCommonWord, func(cfg any) (Devices, error) {
+			intelConfig, ok := cfg.(intel.IntelConfig)
+			if !ok {
+				return nil, fmt.Errorf("invalid configuration for %s", intel.IntelGPUCommonWord)
+			}
+			return intel.InitIntelDevice(intelConfig), nil
+		}, config.IntelConfig},
 	}
 
 	// Initialize all devices using the wrapped functions
@@ -254,6 +263,10 @@ iluvatar:
   resourceCoreName: "iluvatar.ai/vcuda-core"
 kunlun:
   resourceCountName: "kunlunxin.com/xpu"
+intel:
+  resourceCountName: "intel.com/vgpu"
+  resourceMemoryName: "intel.com/vgpumem"
+  memoryReserve: 256
 vnpus:
   - chipName: "910B"
     commonWord: "Ascend910A"
@@ -414,6 +427,7 @@ func GlobalFlagSet() *flag.FlagSet {
 	enflame.ParseConfig(fs)
 	metax.ParseConfig(fs)
 	kunlun.ParseConfig(fs)
+	intel.ParseConfig(fs)
 	fs.BoolVar(&DebugMode, "debug", false, "Enable debug mode")
 	fs.StringVar(&configFile, "device-config-file", "", "Path to the device config file")
 	klog.InitFlags(fs)
@@ -446,6 +460,7 @@ func validateConfig(config *Config) error {
 	hasAnyConfig = hasAnyConfig || !reflect.DeepEqual(config.MthreadsConfig, mthreads.MthreadsConfig{})
 	hasAnyConfig = hasAnyConfig || !reflect.DeepEqual(config.MetaxConfig, metax.MetaxConfig{})
 	hasAnyConfig = hasAnyConfig || !reflect.DeepEqual(config.KunlunConfig, kunlun.KunlunConfig{})
+	hasAnyConfig = hasAnyConfig || !reflect.DeepEqual(config.IntelConfig, intel.IntelConfig{})
 	hasAnyConfig = hasAnyConfig || len(config.VNPUs) > 0
 
 	if !hasAnyConfig {

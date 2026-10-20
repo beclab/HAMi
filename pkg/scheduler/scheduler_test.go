@@ -834,3 +834,15 @@ func Test_RegisterFromNodeAnnotations_NIL(t *testing.T) {
 		})
 	}
 }
+
+func Test_summarizeBoundRequests(t *testing.T) {
+	reqs := util.PodDeviceRequests{
+		{"Intel": {Nums: 1, Type: "Intel", Memreq: 4096}},
+		{nvidia.NvidiaGPUDevice: {Nums: 2, Type: nvidia.NvidiaGPUDevice, MemPercentagereq: 101}},
+		{"kunlun": {Nums: 4, Type: "kunlun"}},
+	}
+
+	sum := summarizeBoundRequests(reqs)
+	assert.Equal(t, sum.requested, 3)
+	assert.Equal(t, sum.memoryByte, int64(4096))
+}
