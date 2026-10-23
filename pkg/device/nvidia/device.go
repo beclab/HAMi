@@ -59,7 +59,7 @@ const (
 	AppPodGPUConsumePolicyAll = "all"
 	// consumes a single GPU in a single pod
 	AppPodGPUConsumePolicySingle = "single"
-	AppGPUMemAnnotationTpl       = "gpu.bytetrade.io/app-mem-%s"
+	AppGPUMemAnnotationTpl       = util.AppGPUMemAnnotationTpl
 
 	MigMode      = "mig"
 	HamiCoreMode = "hami-core"

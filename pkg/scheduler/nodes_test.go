@@ -156,6 +156,27 @@ func Test_addNode_ListNodes(t *testing.T) {
 	}
 }
 
+func Test_addNode_KeepsOtherVendors(t *testing.T) {
+	device.InitDefaultDevices()
+	m := nodeManager{nodes: map[string]*util.NodeInfo{}}
+	nvidiaCard := util.DeviceInfo{ID: "GPU-0", Type: "NVIDIA-GeForce RTX 4090", Count: 10, Devmem: 24564}
+	intelCard := util.DeviceInfo{ID: "intel-0", Type: "Intel® Data Center GPU Flex 170", Count: 10, Devmem: 16384}
+
+	add := func(d util.DeviceInfo) {
+		m.addNode("n", &util.NodeInfo{ID: "n", Node: &corev1.Node{}, Devices: []util.DeviceInfo{d}})
+	}
+
+	add(nvidiaCard)
+	add(intelCard)
+	add(nvidiaCard)
+	assert.DeepEqual(t, m.nodes["n"].Devices, []util.DeviceInfo{intelCard, nvidiaCard})
+
+	updated := intelCard
+	updated.Count = 20
+	add(updated)
+	assert.DeepEqual(t, m.nodes["n"].Devices, []util.DeviceInfo{nvidiaCard, updated})
+}
+
 func Test_GetNode(t *testing.T) {
 	tests := []struct {
 		name string

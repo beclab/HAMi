@@ -34,6 +34,10 @@ const (
 	ShareModeMemSlicing    = "1"
 	ShareModeTimeSlicing   = "2"
 
+	// AppGPUMemAnnotationTpl carries a GPUBinding's memory quota for one card
+	// to the vendor's Fit: fmt.Sprintf(AppGPUMemAnnotationTpl, uuid).
+	AppGPUMemAnnotationTpl = "gpu.bytetrade.io/app-mem-%s"
+
 	AppNameLabelKey  = "applications.app.bytetrade.io/name"
 	AppOwnerLabelKey = "applications.app.bytetrade.io/owner"
 

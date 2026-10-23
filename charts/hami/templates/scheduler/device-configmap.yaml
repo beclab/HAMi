@@ -111,6 +111,10 @@ data:
       resourceCoreName: {{ .Values.iluvatarResourceCore }}
     kunlun:
       resourceCountName: {{ .Values.kunlunResourceName }}
+    intel:
+      resourceCountName: "intel.com/vgpu"
+      resourceMemoryName: "intel.com/vgpumem"
+      memoryReserve: {{ .Values.devices.intel.memoryReserve }}
     vnpus:
     - chipName: 910B
       commonWord: Ascend910A

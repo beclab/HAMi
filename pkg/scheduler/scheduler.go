@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Project-HAMi/HAMi/pkg/device/intel"
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 
 	corev1 "k8s.io/api/core/v1"
@@ -581,18 +583,28 @@ func (s *Scheduler) getPodUsage() (map[string]PodUseDeviceStat, error) {
 	return podUsageStat, nil
 }
 
-type nvidiaRequestSummary struct {
+// boundDeviceTypes are the vendors whose cards are handed out through
+// GPUBindings; their Fit only accepts the cards listed in useUUIDAnnotations.
+var boundDeviceTypes = []string{nvidia.NvidiaGPUDevice, intel.IntelGPUDevice}
+
+var useUUIDAnnotations = []string{nvidia.GPUUseUUID, intel.GPUUseUUID}
+
+func isBoundDeviceType(t string) bool {
+	return slices.Contains(boundDeviceTypes, t)
+}
+
+type boundRequestSummary struct {
 	requested     int
 	hasMemory     bool
 	memoryByte    int64
 	memoryPercent int32
 }
 
-func summarizeNVIDIARequests(resourceReqs util.PodDeviceRequests) nvidiaRequestSummary {
-	sum := nvidiaRequestSummary{}
+func summarizeBoundRequests(resourceReqs util.PodDeviceRequests) boundRequestSummary {
+	sum := boundRequestSummary{}
 	for _, ctrReqs := range resourceReqs {
 		for _, req := range ctrReqs {
-			if req.Type != nvidia.NvidiaGPUDevice || req.Nums <= 0 {
+			if !isBoundDeviceType(req.Type) || req.Nums <= 0 {
 				continue
 			}
 			sum.requested += int(req.Nums)
@@ -617,7 +629,7 @@ func summarizeNVIDIARequests(resourceReqs util.PodDeviceRequests) nvidiaRequestS
 	return sum
 }
 
-func requiredNvidiaMemoryBytes(sum nvidiaRequestSummary, totalMemory int64) int64 {
+func requiredNvidiaMemoryBytes(sum boundRequestSummary, totalMemory int64) int64 {
 	if !sum.hasMemory {
 		return 0
 	}
@@ -872,7 +884,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		matchedBindings = append(matchedBindings, b)
 		// todo: currently this will conflict if the pod has multiple containers, or requires multiple GPUs with different memory requests in bindings
 		if b.Spec.Memory != nil {
-			annos[fmt.Sprintf(nvidia.AppGPUMemAnnotationTpl, b.Spec.UUID)] = b.Spec.Memory.String()
+			annos[fmt.Sprintf(util.AppGPUMemAnnotationTpl, b.Spec.UUID)] = b.Spec.Memory.String()
 		}
 	}
 
@@ -966,7 +978,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 			args.NodeNames = &[]string{targetNode}
 			for ctrIdx := range resourceReqs {
 				for reqIdx, req := range resourceReqs[ctrIdx] {
-					if req.Type != nvidia.NvidiaGPUDevice || req.Nums <= 0 {
+					if !isBoundDeviceType(req.Type) || req.Nums <= 0 {
 						continue
 					}
 					// this assumes only one container in the pod has a gpu request
@@ -991,18 +1003,16 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		}
 	}
 
-	nvidiaSummary := summarizeNVIDIARequests(resourceReqs)
-	if nvidiaSummary.requested > 0 && len(selectedUUIDs) < nvidiaSummary.requested {
-		err := fmt.Errorf("insufficient GPUBindings for app %s, requested=%d, bound=%d", appName, nvidiaSummary.requested, len(selectedUUIDs))
+	boundSummary := summarizeBoundRequests(resourceReqs)
+	if boundSummary.requested > 0 && len(selectedUUIDs) < boundSummary.requested {
+		err := fmt.Errorf("insufficient GPUBindings for app %s, requested=%d, bound=%d", appName, boundSummary.requested, len(selectedUUIDs))
 		s.recordScheduleFilterResultEvent(args.Pod, EventReasonInsufficientGPU, "", err)
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: map[string]string{},
 		}, nil
 	}
-	if len(selectedUUIDs) > 0 {
-		annos[nvidia.GPUUseUUID] = strings.Join(selectedUUIDs, ",")
-	} else {
-		annos[nvidia.GPUUseUUID] = ""
+	for _, key := range useUUIDAnnotations {
+		annos[key] = strings.Join(selectedUUIDs, ",")
 	}
 	s.delPod(args.Pod)
 	nodeUsage, failedNodes, err := s.getNodesUsage(args.NodeNames, args.Pod)
@@ -1032,10 +1042,9 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	sort.Sort(nodeScores)
 	m := (*nodeScores).NodeList[len((*nodeScores).NodeList)-1]
 
-	devlist, ok := m.Devices[nvidia.NvidiaGPUDevice]
-	if ok && len(devlist) > 0 {
-		allocatedUUIDs := make(map[string]struct{})
-		for _, cdev := range devlist {
+	allocatedUUIDs := make(map[string]struct{})
+	for _, devType := range boundDeviceTypes {
+		for _, cdev := range m.Devices[devType] {
 			for _, dev := range cdev {
 				uuid := normalizeGPUUUID(dev.UUID)
 				if uuid == "" {
@@ -1044,12 +1053,12 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 				allocatedUUIDs[uuid] = struct{}{}
 			}
 		}
-		for uuid := range allocatedUUIDs {
-			if _, exists := appBoundByUUID[uuid]; !exists {
-				err := fmt.Errorf("allocated GPU %s for app %s has no matching GPUBinding", uuid, appName)
-				s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
-				return nil, err
-			}
+	}
+	for uuid := range allocatedUUIDs {
+		if _, exists := appBoundByUUID[uuid]; !exists {
+			err := fmt.Errorf("allocated GPU %s for app %s has no matching GPUBinding", uuid, appName)
+			s.recordScheduleFilterResultEvent(args.Pod, EventReasonFilteringFailed, "", err)
+			return nil, err
 		}
 	}
 
