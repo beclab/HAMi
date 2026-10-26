@@ -21,6 +21,7 @@ dockerwithlib:
 	--build-arg NVIDIA_IMAGE=${NVIDIA_IMAGE} \
 	--build-arg DEST_DIR=${DEST_DIR} \
 	--build-arg VERSION=${VERSION} \
+	--build-arg VGPU_BUILDER=${VGPU_BUILDER} \
 	--build-arg GOPROXY=https://goproxy.cn,direct \
 	. -f=docker/Dockerfile.withlib -t ${IMG_TAG}
 
