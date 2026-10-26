@@ -7,6 +7,10 @@ on:
         description: image tag
         required: true
         type: string
+      vgpuBuilderTag:
+        description: beclab/vgpu_builder tag that provides libvgpu.so
+        required: true
+        type: string
 
 jobs:
   docker-build:
@@ -38,7 +42,7 @@ jobs:
           build-args: |
             VERSION=${{ inputs.imageTag }}
             GOLANG_IMAGE=golang:1.24.4-bullseye
-            NVIDIA_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu20.04
+            VGPU_BUILDER=beclab/vgpu_builder:${{ inputs.vgpuBuilderTag }}
             DEST_DIR=/usr/local
           tags: beclab/hami:${{ inputs.imageTag }}
           push: true
