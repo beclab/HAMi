@@ -59,7 +59,9 @@ const (
 	AppPodGPUConsumePolicyAll = "all"
 	// consumes a single GPU in a single pod
 	AppPodGPUConsumePolicySingle = "single"
-	AppGPUMemAnnotationTpl       = util.AppGPUMemAnnotationTpl
+	// each pod consumes the number of GPUs it requests, all on one node
+	AppPodGPUConsumePolicySplit = "split"
+	AppGPUMemAnnotationTpl      = util.AppGPUMemAnnotationTpl
 
 	MigMode      = "mig"
 	HamiCoreMode = "hami-core"

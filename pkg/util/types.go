@@ -40,6 +40,9 @@ const (
 
 	AppNameLabelKey  = "applications.app.bytetrade.io/name"
 	AppOwnerLabelKey = "applications.app.bytetrade.io/owner"
+	// AppGPUConsumerLabelKey names the consumer (workload) a pod belongs to;
+	// it selects the GPUBindings whose spec.consumer matches.
+	AppGPUConsumerLabelKey = "gpu.bytetrade.io/consumer"
 
 	DeviceBindAllocating = "allocating"
 	DeviceBindFailed     = "failed"
