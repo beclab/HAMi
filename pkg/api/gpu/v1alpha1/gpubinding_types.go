@@ -28,6 +28,9 @@ type GPUBindingSpec struct {
 	Namespace   string                `json:"namespace,omitempty"`
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 	Memory      *resource.Quantity    `json:"memory,omitempty"`
+	// Consumer names the workload inside the app that may use this card.
+	// Empty matches every pod of the app.
+	Consumer string `json:"consumer,omitempty"`
 }
 
 // +kubebuilder:object:root=true

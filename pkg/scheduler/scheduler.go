@@ -653,6 +653,7 @@ type appBindingIdentity struct {
 	appName   string
 	owner     string
 	namespace string
+	consumer  string
 }
 
 func podBindingIdentity(pod *corev1.Pod) appBindingIdentity {
@@ -664,8 +665,15 @@ func podBindingIdentity(pod *corev1.Pod) appBindingIdentity {
 	if pod.Labels != nil {
 		id.appName = pod.Labels[util.AppNameLabelKey]
 		id.owner = pod.Labels[util.AppOwnerLabelKey]
+		id.consumer = pod.Labels[util.AppGPUConsumerLabelKey]
 	}
 	return id
+}
+
+// consumersMatch treats an empty consumer on either side as a wildcard, so
+// bindings and pods created before consumers existed keep matching.
+func consumersMatch(a, b string) bool {
+	return a == "" || b == "" || a == b
 }
 
 func bindingMatchesIdentity(binding *v1alpha1.GPUBinding, id appBindingIdentity) bool {
@@ -678,7 +686,22 @@ func bindingMatchesIdentity(binding *v1alpha1.GPUBinding, id appBindingIdentity)
 	if binding.Spec.Namespace != "" && binding.Spec.Namespace != id.namespace {
 		return false
 	}
-	return true
+	return consumersMatch(binding.Spec.Consumer, id.consumer)
+}
+
+// podSharesConsumer reports whether another pod's card usage counts against
+// the identity: same app, owner and namespace, and the same consumer.
+func podSharesConsumer(labels map[string]string, namespace string, id appBindingIdentity) bool {
+	if labels == nil || labels[util.AppNameLabelKey] != id.appName {
+		return false
+	}
+	if id.owner != "" && labels[util.AppOwnerLabelKey] != id.owner {
+		return false
+	}
+	if id.namespace != "" && namespace != id.namespace {
+		return false
+	}
+	return consumersMatch(labels[util.AppGPUConsumerLabelKey], id.consumer)
 }
 
 // buildGPUUUIDToNodeMap returns a mapping from GPU UUID to the name of the node
@@ -709,13 +732,7 @@ func (s *Scheduler) buildGPUUUIDToNodeMap() map[string]string {
 func (s *Scheduler) collectConsumedGPUUUIDsByApp(identity appBindingIdentity, currentPod *corev1.Pod) map[string]struct{} {
 	consumed := make(map[string]struct{})
 	for _, p := range s.ListPodsInfo() {
-		if p.Labels == nil || p.Labels[util.AppNameLabelKey] != identity.appName {
-			continue
-		}
-		if identity.owner != "" && p.Labels[util.AppOwnerLabelKey] != identity.owner {
-			continue
-		}
-		if identity.namespace != "" && p.Namespace != identity.namespace {
+		if !podSharesConsumer(p.Labels, p.Namespace, identity) {
 			continue
 		}
 		if currentPod != nil && p.Namespace == currentPod.Namespace && p.Name == currentPod.Name {
@@ -993,8 +1010,10 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 				"app", appName, "node", targetNode, "gpuCount", len(targetUUIDs), "uuids", targetUUIDs)
 		}
 	} else {
-		// other policies (e.g. "single"): keep the pod's own requested GPU count and
-		// only constrain it to the app's bound GPUs that are still free.
+		// "single" and "split": keep the pod's own requested GPU count and only
+		// constrain it to the app's bound GPUs that are still free. Fit takes all
+		// requested GPUs from one node, so a split pod asking for k cards lands on
+		// a node holding at least k free bound cards.
 		for _, b := range matchedBindings {
 			if _, occupied := consumedByApp[normalizeGPUUUID(b.Spec.UUID)]; occupied {
 				continue
